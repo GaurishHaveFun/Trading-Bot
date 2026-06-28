@@ -1,0 +1,20 @@
+schedule:
+  "on": "0 16 * * 1-5"
+  timezone: "America/New_York"
+
+rules:
+  - name: oversold_rsi
+    weight: 2.0
+    condition: "rsi(14) < 35"
+  - name: above_long_trend
+    weight: 1.5
+    condition: "close > sma(200)"
+  - name: golden_cross_state
+    weight: 1.5
+    condition: "sma(50) > sma(200)"
+  - name: volume_spike
+    weight: 1.0
+    condition: "volume > sma_volume(20) * 1.5"
+  - name: reasonable_volatility
+    weight: 1.0
+    condition: "atr(14) / close < 0.05"
