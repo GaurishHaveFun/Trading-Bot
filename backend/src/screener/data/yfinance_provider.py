@@ -84,7 +84,7 @@ class YFinanceProvider(DataProvider):
             interval=interval,
             auto_adjust=True,
             progress=False,
-            multi_level_column=False,
+            multi_level_index=False,
         )
         if df.empty:
             return []
