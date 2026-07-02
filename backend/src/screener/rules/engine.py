@@ -19,12 +19,24 @@ class RuleEngine:
     def __init__(self, rules: list[RuleConfig]) -> None:
         self._rules = rules
 
-    def evaluate(self, symbol: str, bars: list[Bar]) -> list[RuleResult]:
-        """Evaluate all rules for a ticker. Returns one RuleResult per rule."""
+    def evaluate(
+        self,
+        symbol: str,
+        bars: list[Bar],
+        meta: dict | None = None,
+        watchlist: set[str] | None = None,
+    ) -> list[RuleResult]:
+        """Evaluate all rules for a ticker. Returns one RuleResult per rule.
+
+        `meta` is per-symbol quote metadata (price_to_book, change_pct, ...)
+        from the universe provider's `get_quotes()`. `watchlist` is the set
+        of big-tech/chip symbols; `in_watchlist` is derived from membership.
+        """
         df = _bars_to_df(bars)
         close = latest_close(df)
         volume = float(latest_volume(df))
-        symbol_table = build_symbol_table(df, close, volume)
+        in_watchlist = symbol in watchlist if watchlist else False
+        symbol_table = build_symbol_table(df, close, volume, meta=meta, in_watchlist=in_watchlist)
 
         results = []
         for rule in self._rules:
@@ -117,9 +129,12 @@ def _extract_detail(condition: str, symbol_table: dict) -> dict:
     # Always include close and volume
     detail["close"] = symbol_table.get("close", 0.0)
     detail["volume"] = symbol_table.get("volume", 0.0)
+    # Always surface watchlist membership and P/B — cheap scalars, useful context
+    detail["in_watchlist"] = symbol_table.get("in_watchlist", False)
+    detail["price_to_book"] = symbol_table.get("price_to_book", float("inf"))
 
     # Check which indicator functions are referenced by name
-    for name in ("sma", "ema", "rsi", "atr", "sma_volume"):
+    for name in ("sma", "ema", "rsi", "atr", "sma_volume", "low_52w", "high_52w"):
         if name + "(" in condition:
             matches = re.findall(rf"{name}\((\d+)\)", condition)
             for period_str in matches:

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     alpaca_secret: str = ""
     alert_threshold: float = 0.70
     log_level: str = "INFO"
+    universe: str = "losers"  # "static" | "losers"
+    watchlist_path: str = "config/watchlist.yaml"
 
 
 class RuleConfig(BaseModel):
@@ -43,6 +45,13 @@ def load_rules_config(path: str | Path) -> RulesConfig:
     with open(path, "r") as f:
         data = yaml.safe_load(f)
     return RulesConfig.model_validate(data)
+
+
+def load_watchlist(path: str | Path) -> set[str]:
+    """Parse watchlist.yaml into a set of ticker symbols."""
+    with open(path, "r") as f:
+        data = yaml.safe_load(f)
+    return {str(s) for s in data["symbols"]}
 
 
 _settings: Settings | None = None

@@ -3,9 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from screener.config import RulesConfig, load_rules_config
+from screener.config import RulesConfig, load_rules_config, load_watchlist
 
 RULES_YAML = Path(__file__).parent.parent / "config" / "rules.yaml"
+WATCHLIST_YAML = Path(__file__).parent.parent / "config" / "watchlist.yaml"
 
 
 def test_load_rules_config_parses_five_rules():
@@ -17,21 +18,57 @@ def test_load_rules_config_parses_five_rules():
 def test_rule_names():
     config = load_rules_config(RULES_YAML)
     names = [r.name for r in config.rules]
-    assert "oversold_rsi" in names
-    assert "above_long_trend" in names
-    assert "golden_cross_state" in names
-    assert "volume_spike" in names
-    assert "reasonable_volatility" in names
+    assert "big_tech_or_chip" in names
+    assert "oversold_band" in names
+    assert "quality_uptrend" in names
+    assert "near_52w_low" in names
+    assert "undervalued_pb" in names
 
 
 def test_rule_weights():
     config = load_rules_config(RULES_YAML)
     weight_map = {r.name: r.weight for r in config.rules}
-    assert weight_map["oversold_rsi"] == 2.0
-    assert weight_map["above_long_trend"] == 1.5
+    assert weight_map["big_tech_or_chip"] == 2.0
+    assert weight_map["oversold_band"] == 2.0
+    assert weight_map["quality_uptrend"] == 1.5
+    assert weight_map["near_52w_low"] == 1.0
+    assert weight_map["undervalued_pb"] == 1.5
 
 
 def test_schedule_parsed():
     config = load_rules_config(RULES_YAML)
     assert config.schedule.on == "0 16 * * 1-5"
     assert config.schedule.timezone == "America/New_York"
+
+
+# --- watchlist ---
+
+def test_load_watchlist_returns_set():
+    watchlist = load_watchlist(WATCHLIST_YAML)
+    assert isinstance(watchlist, set)
+
+
+def test_load_watchlist_contains_expected():
+    watchlist = load_watchlist(WATCHLIST_YAML)
+    assert "AAPL" in watchlist
+    assert "NVDA" in watchlist
+    assert "SMCI" in watchlist
+
+
+def test_load_watchlist_count():
+    watchlist = load_watchlist(WATCHLIST_YAML)
+    assert len(watchlist) == 16
+
+
+# --- Settings ---
+
+def test_settings_default_universe_is_losers():
+    from screener.config import Settings
+    settings = Settings(_env_file=None)
+    assert settings.universe == "losers"
+
+
+def test_settings_default_watchlist_path():
+    from screener.config import Settings
+    settings = Settings(_env_file=None)
+    assert settings.watchlist_path == "config/watchlist.yaml"

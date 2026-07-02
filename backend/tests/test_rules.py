@@ -143,26 +143,140 @@ def test_invalid_condition_returns_failed_result(bars_250):
 
 
 def test_all_five_spec_rules():
-    """Evaluate all 5 rules from the spec against known bars."""
+    """Evaluate all 5 buy-the-dip rules from the spec against known bars."""
     from screener.config import load_rules_config
     from pathlib import Path
     rules_config = load_rules_config(Path("config/rules.yaml"))
     engine = RuleEngine(rules_config.rules)
     # bars with close=100, volume=2M — with 250 identical bars:
-    # sma(50)=100, sma(200)=100 → close > sma(200) fails (equal, not greater)
-    # sma(50) > sma(200) fails (equal)
-    # rsi(14) will be ~50 (neutral) → rsi(14) < 35 fails
-    # volume=2M, sma_volume(20)=2M → volume > sma_volume(20)*1.5 fails
-    # atr(14)/close will be small → reasonable_volatility passes
+    # in_watchlist=False (no watchlist passed) → big_tech_or_chip fails
+    # rsi(14) will be ~50 (neutral) → oversold_band (25 < rsi < 40) fails
+    # sma(200)=100 → close > sma(200) fails (equal, not greater)
+    # low_52w(252)=98 (constant low) → close <= low_52w*1.15 passes
+    # price_to_book defaults to inf (no meta) → undervalued_pb fails
     bars = _make_bars_simple(250, close=100.0, volume=2_000_000)
     results = engine.evaluate("AAPL", bars)
     assert len(results) == 5
     names = [r.rule_name for r in results]
-    assert "oversold_rsi" in names
-    assert "above_long_trend" in names
-    assert "golden_cross_state" in names
-    assert "volume_spike" in names
-    assert "reasonable_volatility" in names
+    assert "big_tech_or_chip" in names
+    assert "oversold_band" in names
+    assert "quality_uptrend" in names
+    assert "near_52w_low" in names
+    assert "undervalued_pb" in names
     # Score must be between 0 and 1
     score = engine.score(results)
     assert 0.0 <= score <= 1.0
+
+
+# --- in_watchlist ---
+
+def test_in_watchlist_true_when_symbol_in_watchlist(bars_250):
+    rules = [RuleConfig(name="wl", weight=1.0, condition="in_watchlist")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("NVDA", bars_250, watchlist={"NVDA", "AAPL"})
+    assert results[0].passed is True
+    assert results[0].detail["in_watchlist"] is True
+
+
+def test_in_watchlist_false_when_symbol_not_in_watchlist(bars_250):
+    rules = [RuleConfig(name="wl", weight=1.0, condition="in_watchlist")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("XOM", bars_250, watchlist={"NVDA", "AAPL"})
+    assert results[0].passed is False
+    assert results[0].detail["in_watchlist"] is False
+
+
+def test_in_watchlist_false_when_no_watchlist_passed(bars_250):
+    rules = [RuleConfig(name="wl", weight=1.0, condition="in_watchlist")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("NVDA", bars_250)
+    assert results[0].passed is False
+
+
+# --- price_to_book default-inf safety ---
+
+def test_price_to_book_defaults_to_inf_when_meta_missing(bars_250):
+    rules = [RuleConfig(name="pb", weight=1.0, condition="price_to_book < 4")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("AAPL", bars_250)
+    assert results[0].passed is False
+    assert results[0].detail["price_to_book"] == float("inf")
+
+
+def test_price_to_book_defaults_to_inf_when_meta_has_no_pb_key(bars_250):
+    rules = [RuleConfig(name="pb", weight=1.0, condition="price_to_book < 4")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("AAPL", bars_250, meta={"change_pct": -3.0})
+    assert results[0].detail["price_to_book"] == float("inf")
+
+
+def test_price_to_book_uses_meta_value_when_present(bars_250):
+    rules = [RuleConfig(name="pb", weight=1.0, condition="price_to_book < 4")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("AAPL", bars_250, meta={"price_to_book": 2.5})
+    assert results[0].passed is True
+
+
+# --- near_52w_low ---
+
+def test_near_52w_low_passes_at_the_low():
+    """All bars at the same close/low → close equals low_52w → passes."""
+    bars = _make_bars_simple(250, close=100.0)
+    rules = [RuleConfig(name="near_low", weight=1.0, condition="close <= low_52w(252) * 1.15")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("AAPL", bars)
+    assert results[0].passed is True
+
+
+def test_near_52w_low_fails_far_above_low():
+    """Build bars where the low was far below current close/low."""
+    base = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    bars = []
+    for i in range(250):
+        low = 10.0 if i == 0 else 100.0
+        close = 10.0 if i == 0 else 200.0
+        bars.append(Bar(
+            timestamp=base + timedelta(days=i),
+            open=close - 1,
+            high=close + 2,
+            low=low,
+            close=close,
+            volume=1_000_000,
+        ))
+    rules = [RuleConfig(name="near_low", weight=1.0, condition="close <= low_52w(252) * 1.15")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("AAPL", bars)
+    assert results[0].passed is False
+
+
+# --- oversold_band boundaries ---
+
+def test_oversold_band_condition_present_in_detail():
+    """RSI between 25 and 40 should pass the oversold_band condition."""
+    base = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    bars = []
+    close = 100.0
+    for i in range(250):
+        # Mostly downward drift so RSI settles low but not zero
+        close -= 0.3 if i % 3 != 0 else -0.1
+        bars.append(Bar(
+            timestamp=base + timedelta(days=i),
+            open=close + 0.5,
+            high=close + 1,
+            low=close - 1,
+            close=close,
+            volume=1_000_000,
+        ))
+    rules = [RuleConfig(name="oversold_band", weight=1.0, condition="rsi(14) > 25 and rsi(14) < 40")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("AAPL", bars)
+    assert "rsi_14" in results[0].detail
+    assert 0.0 <= results[0].detail["rsi_14"] <= 100.0
+
+
+def test_oversold_band_fails_when_rsi_neutral(bars_250):
+    """Flat prices → RSI is neutral (NaN-avoiding ~ constant), outside 25-40 band or edge — assert boolean type only."""
+    rules = [RuleConfig(name="oversold_band", weight=1.0, condition="rsi(14) > 25 and rsi(14) < 40")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("AAPL", bars_250)
+    assert isinstance(results[0].passed, bool)

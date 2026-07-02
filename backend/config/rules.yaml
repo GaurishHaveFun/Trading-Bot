@@ -3,18 +3,18 @@ schedule:
   timezone: "America/New_York"
 
 rules:
-  - name: oversold_rsi
+  - name: big_tech_or_chip
     weight: 2.0
-    condition: "rsi(14) < 35"
-  - name: above_long_trend
+    condition: "in_watchlist"
+  - name: oversold_band
+    weight: 2.0
+    condition: "rsi(14) > 25 and rsi(14) < 40"
+  - name: quality_uptrend
     weight: 1.5
     condition: "close > sma(200)"
-  - name: golden_cross_state
+  - name: near_52w_low
+    weight: 1.0
+    condition: "close <= low_52w(252) * 1.15"
+  - name: undervalued_pb
     weight: 1.5
-    condition: "sma(50) > sma(200)"
-  - name: volume_spike
-    weight: 1.0
-    condition: "volume > sma_volume(20) * 1.5"
-  - name: reasonable_volatility
-    weight: 1.0
-    condition: "atr(14) / close < 0.05"
+    condition: "price_to_book < 4"

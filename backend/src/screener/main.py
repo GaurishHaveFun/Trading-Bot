@@ -6,12 +6,12 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from screener.config import get_settings, load_rules_config
+from screener.config import get_settings, load_rules_config, load_watchlist
 from screener.data import BarCache, YFinanceProvider
 from screener.models import Bar, RuleResult, ScreenerRun, Signal
 from screener.output import write_run
 from screener.rules import RuleEngine
-from screener.universe import StaticUniverse
+from screener.universe import LosersUniverse, StaticUniverse, UniverseProvider
 from screener.utils.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -24,14 +24,24 @@ _LOOKBACK_DAYS = 375  # ~250 trading days
 _CONCURRENCY = 10
 
 
+def _build_universe(universe_setting: str, watchlist: set[str]) -> UniverseProvider:
+    """Select the universe provider by config setting (orchestration only —
+    provider construction, no filtering/scoring logic lives here)."""
+    if universe_setting == "losers":
+        return LosersUniverse(watchlist=watchlist)
+    return StaticUniverse(_UNIVERSE_PATH)
+
+
 async def run_screener() -> ScreenerRun:
     """Full pipeline: universe → fetch → evaluate → output."""
     settings = get_settings()
     configure_logging(settings.log_level)
 
     rules_config = load_rules_config(_RULES_PATH)
-    universe = StaticUniverse(_UNIVERSE_PATH)
+    watchlist = load_watchlist(settings.watchlist_path)
+    universe = _build_universe(settings.universe, watchlist)
     symbols = universe.get_symbols()
+    quotes = universe.get_quotes()
 
     cache = BarCache(_CACHE_PATH)
     provider = YFinanceProvider(cache)
@@ -63,11 +73,12 @@ async def run_screener() -> ScreenerRun:
             logger.warning("insufficient_bars", symbol=symbol, count=len(bars))
             continue
 
-        rule_results = engine.evaluate(symbol, bars)
+        meta = quotes.get(symbol)
+        rule_results = engine.evaluate(symbol, bars, meta=meta, watchlist=watchlist)
         score = engine.score(rule_results)
         rules_passed = sum(1 for r in rule_results if r.passed)
 
-        snapshot = _build_snapshot(bars, rule_results)
+        snapshot = _build_snapshot(bars, rule_results, meta=meta, symbol=symbol, watchlist=watchlist)
 
         signal = Signal(
             ticker=symbol,
@@ -84,7 +95,7 @@ async def run_screener() -> ScreenerRun:
 
     run = ScreenerRun(
         run_timestamp=run_ts,
-        universe="static",
+        universe=settings.universe,
         alert_threshold=settings.alert_threshold,
         signals=signals,
     )
@@ -107,8 +118,15 @@ async def run_screener() -> ScreenerRun:
     return run
 
 
-def _build_snapshot(bars: list[Bar], rule_results: list[RuleResult]) -> dict:
-    """Build the snapshot dict from the last bar and rule detail values."""
+def _build_snapshot(
+    bars: list[Bar],
+    rule_results: list[RuleResult],
+    meta: dict | None = None,
+    symbol: str | None = None,
+    watchlist: set[str] | None = None,
+) -> dict:
+    """Build the snapshot dict from the last bar, rule detail values, and
+    per-symbol quote metadata (price_to_book/change_pct/in_watchlist)."""
     from screener.indicators.library import latest_close, latest_volume, sma, rsi, atr
     import pandas as pd
 
@@ -137,6 +155,14 @@ def _build_snapshot(bars: list[Bar], rule_results: list[RuleResult]) -> dict:
         snapshot["atr_14"] = round(atr(df, 14), 4)
     except Exception:
         pass
+
+    meta = meta or {}
+    price_to_book = meta.get("price_to_book")
+    snapshot["price_to_book"] = price_to_book if price_to_book is not None else float("inf")
+    change_pct = meta.get("change_pct")
+    snapshot["change_pct"] = change_pct if change_pct is not None else 0.0
+    snapshot["in_watchlist"] = symbol in watchlist if (watchlist and symbol) else False
+
     return snapshot
 
 
@@ -160,6 +186,7 @@ async def run_ticker_debug(symbol: str) -> None:
     configure_logging(settings.log_level)
 
     rules_config = load_rules_config(_RULES_PATH)
+    watchlist = load_watchlist(settings.watchlist_path)
     cache = BarCache(_CACHE_PATH)
     provider = YFinanceProvider(cache)
     engine = RuleEngine(rules_config.rules)
@@ -173,10 +200,11 @@ async def run_ticker_debug(symbol: str) -> None:
         cache.close()
         return
 
-    rule_results = engine.evaluate(symbol, bars)
+    meta = LosersUniverse(watchlist=watchlist).quote_for(symbol)
+    rule_results = engine.evaluate(symbol, bars, meta=meta, watchlist=watchlist)
     score = engine.score(rule_results)
     rules_passed = sum(1 for r in rule_results if r.passed)
-    snapshot = _build_snapshot(bars, rule_results)
+    snapshot = _build_snapshot(bars, rule_results, meta=meta, symbol=symbol, watchlist=watchlist)
 
     signal = Signal(
         ticker=symbol,

@@ -13,6 +13,14 @@ def _volume(df: pd.DataFrame) -> pd.Series:
     return df["volume"].astype(float)
 
 
+def _low(df: pd.DataFrame) -> pd.Series:
+    return df["low"].astype(float)
+
+
+def _high(df: pd.DataFrame) -> pd.Series:
+    return df["high"].astype(float)
+
+
 def sma(df: pd.DataFrame, period: int) -> float:
     """Simple moving average of close over `period` bars."""
     result = ta.sma(_close(df), length=period)
@@ -40,6 +48,26 @@ def atr(df: pd.DataFrame, period: int) -> float:
 def sma_volume(df: pd.DataFrame, period: int) -> float:
     """Simple moving average of volume over `period` bars."""
     result = ta.sma(_volume(df), length=period)
+    return float(result.iloc[-1])
+
+
+def low_52w(df: pd.DataFrame, period: int = 252) -> float:
+    """Rolling low over `period` bars (default ~52 weeks of trading days), latest scalar.
+
+    Uses `min_periods=1` so tickers with less than `period` bars of history
+    still return a real value (their all-time low) instead of NaN.
+    """
+    result = _low(df).rolling(window=period, min_periods=1).min()
+    return float(result.iloc[-1])
+
+
+def high_52w(df: pd.DataFrame, period: int = 252) -> float:
+    """Rolling high over `period` bars (default ~52 weeks of trading days), latest scalar.
+
+    Uses `min_periods=1` so tickers with less than `period` bars of history
+    still return a real value (their all-time high) instead of NaN.
+    """
+    result = _high(df).rolling(window=period, min_periods=1).max()
     return float(result.iloc[-1])
 
 

@@ -9,6 +9,8 @@ from screener.indicators.library import (
     rsi as _rsi,
     atr as _atr,
     sma_volume as _sma_volume,
+    low_52w as _low_52w,
+    high_52w as _high_52w,
 )
 
 
@@ -42,14 +44,50 @@ def _make_sma_volume(df: pd.DataFrame):
     return sma_volume
 
 
-def build_symbol_table(df: pd.DataFrame, close: float, volume: float) -> dict:
-    """Build the asteval symbol table for a single ticker's bar DataFrame."""
+def _make_low_52w(df: pd.DataFrame):
+    def low_52w(period: int = 252) -> float:
+        return _low_52w(df, period)
+    return low_52w
+
+
+def _make_high_52w(df: pd.DataFrame):
+    def high_52w(period: int = 252) -> float:
+        return _high_52w(df, period)
+    return high_52w
+
+
+def build_symbol_table(
+    df: pd.DataFrame,
+    close: float,
+    volume: float,
+    meta: dict | None = None,
+    in_watchlist: bool = False,
+) -> dict:
+    """Build the asteval symbol table for a single ticker's bar DataFrame.
+
+    `meta` carries per-symbol quote metadata from the universe provider's
+    `get_quotes()` (e.g. price_to_book, change_pct). Missing values fall back
+    to safe defaults so rule conditions never blow up on absent data.
+    """
+    meta = meta or {}
+    price_to_book = meta.get("price_to_book")
+    if price_to_book is None:
+        price_to_book = float("inf")
+    change_pct = meta.get("change_pct")
+    if change_pct is None:
+        change_pct = 0.0
+
     return {
         "sma": _make_sma(df),
         "ema": _make_ema(df),
         "rsi": _make_rsi(df),
         "atr": _make_atr(df),
         "sma_volume": _make_sma_volume(df),
+        "low_52w": _make_low_52w(df),
+        "high_52w": _make_high_52w(df),
         "close": close,
         "volume": volume,
+        "price_to_book": price_to_book,
+        "change_pct": change_pct,
+        "in_watchlist": in_watchlist,
     }

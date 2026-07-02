@@ -6,7 +6,17 @@ import pandas as pd
 import numpy as np
 import pytest
 
-from screener.indicators.library import sma, ema, rsi, atr, sma_volume, latest_close, latest_volume
+from screener.indicators.library import (
+    sma,
+    ema,
+    rsi,
+    atr,
+    sma_volume,
+    latest_close,
+    latest_volume,
+    low_52w,
+    high_52w,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "aapl_sample.csv"
 
@@ -68,3 +78,43 @@ def test_sma_returns_float(df):
 
 def test_latest_volume_returns_int(df):
     assert isinstance(latest_volume(df), int)
+
+
+# --- low_52w / high_52w ---
+
+def test_low_52w_matches_rolling_min(df):
+    # fixture has 250 rows; use a period within range for a direct comparison
+    result = low_52w(df, period=200)
+    expected = df["low"].rolling(200, min_periods=1).min().iloc[-1]
+    assert result == pytest.approx(expected, rel=1e-6)
+
+
+def test_high_52w_matches_rolling_max(df):
+    result = high_52w(df, period=200)
+    expected = df["high"].rolling(200, min_periods=1).max().iloc[-1]
+    assert result == pytest.approx(expected, rel=1e-6)
+
+
+def test_low_52w_returns_float(df):
+    assert isinstance(low_52w(df, period=50), float)
+
+
+def test_high_52w_returns_float(df):
+    assert isinstance(high_52w(df, period=50), float)
+
+
+def test_low_52w_never_nan_when_period_exceeds_available_bars(df):
+    """Default period=252 exceeds the 250-row fixture — must not return NaN."""
+    result = low_52w(df)
+    assert result == result  # NaN != NaN, so this fails if NaN
+    assert result > 0
+
+
+def test_high_52w_never_nan_when_period_exceeds_available_bars(df):
+    result = high_52w(df)
+    assert result == result  # NaN check
+    assert result > 0
+
+
+def test_low_52w_le_high_52w(df):
+    assert low_52w(df, period=200) <= high_52w(df, period=200)
