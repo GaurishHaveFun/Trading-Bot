@@ -1,0 +1,119 @@
+name: Screener
+
+on:
+  schedule:
+    # 21:00 UTC daily = 4pm EST / 5pm EDT. GitHub cron is UTC-only (no DST
+    # awareness), so this drifts an hour relative to market close across the
+    # year — nudge to "0 20 * * *" for summer-accurate 4pm ET if it matters.
+    - cron: "0 21 * * *"
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: "Optional: run a single ticker (e.g. AAPL) instead of the full screen. Leave blank for the daily full-market run."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: screener-pages
+  cancel-in-progress: false
+
+jobs:
+  run-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync
+
+      - name: Prepare site directory
+        run: mkdir -p site
+
+      - name: Run screener for a single ticker
+        if: ${{ github.event.inputs.ticker != '' }}
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          # main.py uppercases the ticker internally for the output filename
+          # (args.ticker.upper()) — match that here so the glob below finds it.
+          TICKER=$(echo "${{ github.event.inputs.ticker }}" | tr '[:lower:]' '[:upper:]')
+          uv run python -m screener.main --ticker "$TICKER"
+
+          PDF=$(ls -t output/reports/report_"${TICKER}"_*.pdf | head -1)
+          cp "$PDF" ../site/ticker.pdf
+
+          STAMP=$(basename "$PDF" .pdf | sed -E "s/report_${TICKER}_//")
+          cat > ../site/ticker.html <<HTML
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Screener report — ${TICKER}</title>
+            <style>
+              body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 1.25rem; background: #0b0e14; color: #e6e6e6; }
+              h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+              p.meta { color: #9aa4b2; margin: 0 0 1rem; font-size: 0.9rem; }
+              a.download { display: inline-block; margin-bottom: 1rem; padding: 0.6rem 1rem; background: #2563eb; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; }
+              iframe { width: 100%; height: 85vh; border: 1px solid #2a2f3a; border-radius: 8px; background: white; }
+            </style>
+          </head>
+          <body>
+            <h1>Single-ticker report — ${TICKER}</h1>
+            <p class="meta">Run: ${STAMP} UTC · manual run, not the daily screen</p>
+            <a class="download" href="ticker.pdf">Open / download the full PDF report</a>
+            <iframe src="ticker.pdf"></iframe>
+          </body>
+          </html>
+          HTML
+
+      - name: Run full daily screen
+        if: ${{ github.event.inputs.ticker == '' }}
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          uv run python -m screener.main --once
+
+          PDF=$(ls -t output/reports/report_[0-9]*.pdf | head -1)
+          cp "$PDF" ../site/daily.pdf
+
+          STAMP=$(basename "$PDF" .pdf | sed -E "s/report_//")
+          cat > ../site/index.html <<HTML
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Stock Screener — daily report</title>
+            <style>
+              body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 1.25rem; background: #0b0e14; color: #e6e6e6; }
+              h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+              p.meta { color: #9aa4b2; margin: 0 0 1rem; font-size: 0.9rem; }
+              a.download { display: inline-block; margin-bottom: 1rem; padding: 0.6rem 1rem; background: #2563eb; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; }
+              iframe { width: 100%; height: 85vh; border: 1px solid #2a2f3a; border-radius: 8px; background: white; }
+            </style>
+          </head>
+          <body>
+            <h1>Stock Screener — daily report</h1>
+            <p class="meta">Run: ${STAMP} UTC</p>
+            <a class="download" href="daily.pdf">Open / download the full PDF report</a>
+            <iframe src="daily.pdf"></iframe>
+          </body>
+          </html>
+          HTML
+
+      - name: Publish to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          keep_files: true

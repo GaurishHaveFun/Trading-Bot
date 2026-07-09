@@ -4,6 +4,7 @@
 __pycache__/
 .venv/
 output/runs/
+output/reports/
 *.pyc
 .pytest_cache/
 dist/
