@@ -9,7 +9,7 @@ from pathlib import Path
 from screener.config import get_settings, load_rules_config, load_watchlist
 from screener.data import BarCache, YFinanceProvider
 from screener.models import Bar, RuleResult, ScreenerRun, Signal
-from screener.output import write_run
+from screener.output import write_report, write_run, write_ticker_report
 from screener.rules import RuleEngine
 from screener.universe import LosersUniverse, StaticUniverse, UniverseProvider
 from screener.utils.logging import configure_logging, get_logger
@@ -101,6 +101,7 @@ async def run_screener() -> ScreenerRun:
     )
 
     path = write_run(run)
+    report_path = write_report(run)
 
     above = [s for s in signals if s.score >= settings.alert_threshold]
     top5 = signals[:5]
@@ -112,6 +113,7 @@ async def run_screener() -> ScreenerRun:
         above_threshold=len(above),
         top5=[f"{s.ticker}={s.score:.2f}" for s in top5],
         output=str(path),
+        report=str(report_path),
     )
 
     cache.close()
@@ -217,6 +219,8 @@ async def run_ticker_debug(symbol: str) -> None:
     )
 
     _print_ticker_breakdown(symbol, signal)
+    report_path = write_ticker_report(signal, settings.alert_threshold, settings.universe)
+    print(f"[PDF] Report written to {report_path}")
     cache.close()
 
 

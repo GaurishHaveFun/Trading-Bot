@@ -2,7 +2,12 @@
 
 ## Overview
 
-The output module serialises a completed `ScreenerRun` to disk as a JSON file, using the locked schema that Phase 3 consumes. It contains one public function (`write_run`) and two private helpers (`_serialise`, `_fmt`).
+The output module renders a completed `ScreenerRun` to disk in two forms:
+
+- **JSON** (`json_writer.py`) — the locked, machine-readable schema that Phase 3 consumes. Public function: `write_run`.
+- **PDF** (`pdf_writer.py`) — a purely additive, human-readable report built with `reportlab`. Public functions: `write_report` (full multi-ticker report) and `write_ticker_report` (single-ticker report for `--ticker` debug mode).
+
+The JSON schema is never touched by the PDF writer — both are rendered independently from the same `ScreenerRun`/`Signal` Pydantic models, so the PDF can evolve freely without risking the Phase 3 contract.
 
 ---
 
@@ -124,3 +129,50 @@ The `Z` suffix is the standard ISO 8601 designator for UTC (`+00:00`). It is pre
   ]
 }
 ```
+
+---
+
+## `pdf_writer.py` — human-readable PDF report
+
+Renders the same `ScreenerRun`/`Signal` models to a styled PDF using reportlab's `platypus` API (`SimpleDocTemplate`, `Table`, `TableStyle`, `Paragraph`, `Spacer`). This exists because the locked JSON schema above is great for Phase 3 but hard for a human to scan; the PDF is a second, additive artifact — it never changes what `write_run` writes.
+
+### `write_report(run, output_dir)`
+
+**Signature:** `write_report(run: ScreenerRun, output_dir: Path = Path("output/reports")) -> Path`
+
+Writes the full multi-ticker report to `output/reports/report_<UTC_ISO>.pdf`, using the same `run.run_timestamp.strftime("%Y%m%dT%H%M%SZ")` naming convention as `json_writer.write_run`. Contents, top to bottom:
+
+1. **Header block** — title, run timestamp (UTC, `Z`-suffixed via `_fmt_ts`, same convention as `json_writer._fmt`), universe, alert threshold, and signal counts (total / at-or-above threshold).
+2. **Ranked summary table** — one row per signal in the order given (already score-descending from `main.py:run_screener`): Rank, Ticker, Score %, Rules (`4/5`), Watchlist (Yes/No), Close, Change %, RSI-14, SMA-200, P/B. Rows scoring at/above `alert_threshold` are shaded and bolded via `TableStyle`.
+3. **Per-ticker sections** — one per signal, each with a heading (`TICKER — 81.00% — 4/5 rules`), a one-line formatted snapshot, and a full rule breakdown table (Rule / Pass ✓·✗ / Weight / Detail).
+
+Logs `report_written` (path, signal count) via the module's `structlog` logger, same pattern as `json_writer.write_run`'s `run_written` event.
+
+### `write_ticker_report(signal, alert_threshold, universe, output_dir)`
+
+**Signature:** `write_ticker_report(signal: Signal, alert_threshold: float, universe: str, output_dir: Path = Path("output/reports")) -> Path`
+
+Single-ticker version used by `--ticker` debug mode. Writes `output/reports/report_<TICKER>_<UTC_ISO>.pdf` (timestamp taken at call time, since a lone `Signal` carries no run timestamp). Internally wraps the signal in a throwaway `ScreenerRun` and calls the same `_header_block`/`_ticker_section` helpers as `write_report`, so the per-ticker layout has one source of truth shared by both entry points — no duplicated rendering logic.
+
+### Formatting helpers
+
+The raw floats in the JSON snapshot (e.g. `540.8800048828125`) are exactly what makes the terminal/JSON output hard to read; these helpers are the actual fix, applied only at PDF render time (the JSON values are untouched):
+
+| Helper | Example |
+|---|---|
+| `_fmt_num(v, decimals=2)` | `540.8800048828125 → "540.88"`; `None`/`inf`/`NaN` → `"—"` |
+| `_fmt_pb(v)` | Price-to-book specific alias of `_fmt_num` — `inf` (no data available) renders as `"—"`, never `"inf"` |
+| `_fmt_pct(v, decimals=2)` | `v` already in percentage units → `-6.891234 → "-6.89%"` |
+| `_fmt_vol(v)` | Humanized volume → `27_754_556 → "27.75M"`; also handles `K`/`B` and sub-1000 values |
+| `_fmt_ts(dt)` | UTC ISO 8601 with `Z` suffix, same convention as `json_writer._fmt` |
+
+### Wiring (`main.py`)
+
+- `run_screener()` calls `write_report(run)` right after `write_run(run)` and adds `report=str(report_path)` to the `screener_complete` log event. The JSON write path is untouched.
+- `run_ticker_debug()` keeps `_print_ticker_breakdown(...)` for the terminal table, then calls `write_ticker_report(signal, settings.alert_threshold, settings.universe)` and prints a one-line pointer: `[PDF] Report written to output/reports/report_<TICKER>_<UTC>.pdf`.
+
+Both functions are orchestration-only calls into the `output` package — no rendering logic lives in `main.py` (non-negotiable #8).
+
+### Dependency
+
+`reportlab>=4.2` (pure-Python, no system libraries required) — added to `pyproject.toml`.
