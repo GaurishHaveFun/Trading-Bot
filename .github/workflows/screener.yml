@@ -70,8 +70,8 @@ jobs:
           <body>
             <h1>Single-ticker report — ${TICKER}</h1>
             <p class="meta">Run: ${STAMP} UTC · manual run, not the daily screen</p>
-            <a class="download" href="ticker.pdf">Open / download the full PDF report</a>
-            <iframe src="ticker.pdf"></iframe>
+            <a class="download" href="ticker.pdf?v=${STAMP}">Open / download the full PDF report</a>
+            <iframe src="ticker.pdf?v=${STAMP}"></iframe>
           </body>
           </html>
           HTML
@@ -105,8 +105,8 @@ jobs:
           <body>
             <h1>Stock Screener — daily report</h1>
             <p class="meta">Run: ${STAMP} UTC</p>
-            <a class="download" href="daily.pdf">Open / download the full PDF report</a>
-            <iframe src="daily.pdf"></iframe>
+            <a class="download" href="daily.pdf?v=${STAMP}">Open / download the full PDF report</a>
+            <iframe src="daily.pdf?v=${STAMP}"></iframe>
           </body>
           </html>
           HTML
