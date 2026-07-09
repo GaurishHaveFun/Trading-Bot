@@ -131,6 +131,7 @@ def _extract_detail(condition: str, symbol_table: dict) -> dict:
     detail["volume"] = symbol_table.get("volume", 0.0)
     # Always surface watchlist membership and P/B — cheap scalars, useful context
     detail["in_watchlist"] = symbol_table.get("in_watchlist", False)
+    detail["is_chip"] = symbol_table.get("is_chip", False)
     detail["price_to_book"] = symbol_table.get("price_to_book", float("inf"))
 
     # Check which indicator functions are referenced by name

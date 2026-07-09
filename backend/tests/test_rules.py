@@ -280,3 +280,70 @@ def test_oversold_band_fails_when_rsi_neutral(bars_250):
     engine = RuleEngine(rules)
     results = engine.evaluate("AAPL", bars_250)
     assert isinstance(results[0].passed, bool)
+
+
+# --- is_chip ---
+
+def test_is_chip_true_for_semiconductors_industry(bars_250):
+    rules = [RuleConfig(name="chip", weight=1.0, condition="is_chip")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("SKYT", bars_250, meta={"industry": "Semiconductors"})
+    assert results[0].passed is True
+    assert results[0].detail["is_chip"] is True
+
+
+def test_is_chip_true_for_semiconductor_equipment_industry(bars_250):
+    rules = [RuleConfig(name="chip", weight=1.0, condition="is_chip")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate(
+        "ASML", bars_250, meta={"industry": "Semiconductor Equipment & Materials"}
+    )
+    assert results[0].passed is True
+
+
+def test_is_chip_false_for_unrelated_industry(bars_250):
+    rules = [RuleConfig(name="chip", weight=1.0, condition="is_chip")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("KO", bars_250, meta={"industry": "Beverages—Non-Alcoholic"})
+    assert results[0].passed is False
+    assert results[0].detail["is_chip"] is False
+
+
+def test_is_chip_false_when_industry_missing(bars_250):
+    rules = [RuleConfig(name="chip", weight=1.0, condition="is_chip")]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("AAPL", bars_250)
+    assert results[0].passed is False
+    assert results[0].detail["is_chip"] is False
+
+
+def test_big_tech_or_chip_passes_for_non_watchlist_chip_symbol(bars_250):
+    """SKYT case: not on the watchlist, but a real semiconductor company."""
+    rules = [
+        RuleConfig(name="big_tech_or_chip", weight=2.0, condition="in_watchlist or is_chip")
+    ]
+    engine = RuleEngine(rules)
+    results = engine.evaluate(
+        "SKYT", bars_250, meta={"industry": "Semiconductors"}, watchlist={"NVDA", "AAPL"}
+    )
+    assert results[0].passed is True
+
+
+def test_big_tech_or_chip_still_passes_via_watchlist_with_no_industry_meta(bars_250):
+    rules = [
+        RuleConfig(name="big_tech_or_chip", weight=2.0, condition="in_watchlist or is_chip")
+    ]
+    engine = RuleEngine(rules)
+    results = engine.evaluate("AAPL", bars_250, watchlist={"NVDA", "AAPL"})
+    assert results[0].passed is True
+
+
+def test_big_tech_or_chip_fails_when_neither_watchlist_nor_chip(bars_250):
+    rules = [
+        RuleConfig(name="big_tech_or_chip", weight=2.0, condition="in_watchlist or is_chip")
+    ]
+    engine = RuleEngine(rules)
+    results = engine.evaluate(
+        "KO", bars_250, meta={"industry": "Beverages—Non-Alcoholic"}, watchlist={"NVDA", "AAPL"}
+    )
+    assert results[0].passed is False

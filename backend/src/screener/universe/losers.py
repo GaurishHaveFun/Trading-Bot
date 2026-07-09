@@ -104,4 +104,6 @@ class LosersUniverse(UniverseProvider):
             "price_to_book": q.get("priceToBook"),
             "change_pct": q.get("regularMarketChangePercent"),
             "market_cap": q.get("marketCap"),
+            "industry": q.get("industry") or q.get("industryKey"),
+            "sector": q.get("sector"),
         }

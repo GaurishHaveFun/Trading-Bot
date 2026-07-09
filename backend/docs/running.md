@@ -12,7 +12,7 @@ cp .env.example .env     # fill in FINNHUB_API_KEY / ALPACA_KEY / ALPACA_SECRET 
 
 Nothing in `.env` is required to run — `yfinance` needs no API key. `ALERT_THRESHOLD` (default `0.70`) can be overridden here if you want alerts to fire more or less easily.
 
-## 2. The three ways to fire it
+## 2. The four ways to fire it
 
 ### `--once` — single run, writes JSON + PDF
 
@@ -38,6 +38,21 @@ uv run python -m screener.main --ticker NVDA
 
 Fetches and evaluates just that ticker and prints a readable per-rule breakdown to the console (score, which rules passed/failed, and the indicator values behind each rule). Does not write a JSON file, but does write a single-ticker PDF report to `output/reports/report_<TICKER>_<UTC>.pdf` (path printed after the breakdown). Use this to sanity-check why a specific stock did or didn't score well.
 
+### `--backtest` — historical backtest of the current rules
+
+```bash
+uv run python -m screener.main --backtest
+uv run python -m screener.main --backtest --days 30 --hold 5   # defaults shown explicitly
+```
+
+Answers a different question than `--once`/`--ticker`: not "what fires today," but "over the last N trading days, which watchlist stocks would have passed the rules, and would buying on the signal day have been profitable?" Fetches historical bars for the 16 symbols in `config/watchlist.yaml` (**not** the live `losers` universe — see `backend/docs/backtest.md` for why that universe isn't backtestable), walks each trading day in the trailing `--days` window (default 30) with no look-ahead, scores it against `config/rules.yaml`'s rules **minus `undervalued_pb`** (dropped because price-to-book has no historical series — see the caveats below), and for every day the score is at/above `ALERT_THRESHOLD`, simulates buying at that day's close and selling `--hold` trading days later (default 5).
+
+Writes a standalone report to `output/reports/backtest_<UTC_ISO>.pdf` — a **separate file family** from `report_<UTC>.pdf`/`report_<TICKER>_<UTC>.pdf`; it never overwrites or merges with those. `--once` and `--ticker` behavior is completely unaffected by this mode. Prints a short console summary (signals fired, win rate, average return, and the delta vs. the baseline — see below) plus the PDF path.
+
+The PDF opens with a caveats block (watchlist-only universe, dropped rule, fixed 5-day hold, no transaction costs, small sample) so the numbers aren't over-read, followed by an aggregate stats table and a full per-trade table (green for wins, red for losses). The key number is **signal average return vs. baseline** — the baseline is the average forward return across *every* evaluated symbol-day, signal or not, so the delta answers "did the rules actually add edge over just holding anything?" See `backend/docs/backtest.md` for the full design writeup.
+
+May take up to ~60 seconds on a cold cache (16 symbols × ~500 calendar days of history); the `BarCache` warms it for subsequent runs.
+
 ### Bare — start the cron scheduler
 
 ```bash
@@ -55,6 +70,12 @@ Starts an APScheduler loop that calls the same pipeline as `--once` on the cron 
 3. Scores the combined set against `config/rules.yaml`'s current 5 rules (`big_tech_or_chip`, `oversold_band`, `quality_uptrend`, `near_52w_low`, `undervalued_pb`) — see `PLAN.md` for the rationale.
 
 To go back to the original fixed 10-ticker universe for a run, set `UNIVERSE=static` in `.env` (or export it) before running.
+
+### `big_tech_or_chip` is sector-aware, not just a watchlist check
+
+The condition is `in_watchlist or is_chip`. `in_watchlist` is membership in the curated `config/watchlist.yaml` list; `is_chip` is derived from the symbol's yfinance `industry` string (`"semiconductor" in industry.lower()`), so any semiconductor-industry stock passes this rule even if it isn't in the watchlist — e.g. SKYT (SkyWater Technology) passes via `is_chip` despite never being added to `watchlist.yaml`.
+
+One caveat: `industry` is reliably present on `.info` lookups (used by `--ticker` and the watchlist-down-today check) but is often missing on `yf.screen("day_losers")` quotes. When it's missing, `is_chip` just evaluates to `False` and the symbol falls back to the `in_watchlist` half of the rule — no extra network call is made to backfill it.
 
 ## 4. Where output goes
 

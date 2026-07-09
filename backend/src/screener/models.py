@@ -73,3 +73,55 @@ class ScreenerRun(BaseModel):
         if v.tzinfo is None:
             return v.replace(tzinfo=timezone.utc)
         return v.astimezone(timezone.utc)
+
+
+class BacktestTrade(BaseModel):
+    """A single simulated trade from the historical backtest: buy at the
+    signal day's close, sell `holding_days` trading days later."""
+
+    ticker: str
+    signal_date: datetime
+    score: float
+    rules_passed: int
+    rules_total: int
+    buy_close: float
+    sell_date: datetime
+    sell_close: float
+    return_pct: float
+    win: bool
+
+    @field_validator("signal_date", "sell_date")
+    @classmethod
+    def must_be_utc(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v.astimezone(timezone.utc)
+
+
+class BacktestResult(BaseModel):
+    """Aggregate output of a historical backtest run. Not part of the
+    locked ScreenerRun JSON schema — a separate, additive model."""
+
+    universe: str
+    holding_days: int
+    alert_threshold: float
+    lookback_days: int
+    start_date: datetime
+    end_date: datetime
+    total_signals: int
+    wins: int
+    losses: int
+    win_rate: float  # 0.0 - 1.0
+    avg_return_pct: float
+    total_return_pct: float
+    best_trade_return_pct: float
+    worst_trade_return_pct: float
+    baseline_avg_return_pct: float
+    trades: list[BacktestTrade] = []
+
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def must_be_utc(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v.astimezone(timezone.utc)

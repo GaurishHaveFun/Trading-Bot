@@ -6,10 +6,11 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from screener.backtest import run_backtest
 from screener.config import get_settings, load_rules_config, load_watchlist
 from screener.data import BarCache, YFinanceProvider
-from screener.models import Bar, RuleResult, ScreenerRun, Signal
-from screener.output import write_report, write_run, write_ticker_report
+from screener.models import Bar, BacktestResult, RuleResult, ScreenerRun, Signal
+from screener.output import write_backtest_report, write_report, write_run, write_ticker_report
 from screener.rules import RuleEngine
 from screener.universe import LosersUniverse, StaticUniverse, UniverseProvider
 from screener.utils.logging import configure_logging, get_logger
@@ -164,6 +165,9 @@ def _build_snapshot(
     change_pct = meta.get("change_pct")
     snapshot["change_pct"] = change_pct if change_pct is not None else 0.0
     snapshot["in_watchlist"] = symbol in watchlist if (watchlist and symbol) else False
+    industry = meta.get("industry") or ""
+    snapshot["industry"] = industry
+    snapshot["is_chip"] = "semiconductor" in industry.lower()
 
     return snapshot
 
@@ -224,6 +228,58 @@ async def run_ticker_debug(symbol: str) -> None:
     cache.close()
 
 
+async def run_backtest_cli(days: int, holding_days: int) -> None:
+    """--backtest mode: run the historical backtest, write the PDF report,
+    and print a short console summary. Orchestration only — all backtest
+    logic lives in screener.backtest."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    result: BacktestResult = await run_backtest(days=days, holding_days=holding_days)
+    report_path = write_backtest_report(result)
+
+    delta_pp = result.avg_return_pct - result.baseline_avg_return_pct
+    sign = "+" if delta_pp >= 0 else ""
+
+    print(f"\n{'='*60}")
+    print(f"  Backtest: {result.lookback_days} eval days, {result.holding_days}-day hold, "
+          f"threshold {result.alert_threshold:.0%}")
+    print(f"{'='*60}")
+    print(f"  Signals fired : {result.total_signals}")
+    print(f"  Win rate      : {result.win_rate:.2%} ({result.wins}W / {result.losses}L)")
+    print(f"  Avg return    : {result.avg_return_pct:.2f}%")
+    print(f"  Baseline      : {result.baseline_avg_return_pct:.2f}%")
+    print(f"  Signal vs base: {sign}{delta_pp:.2f} pp")
+    print(f"  [PDF] Report written to {report_path}")
+    print()
+
+
+async def run_backtest_cli(days: int, holding_days: int) -> None:
+    """--backtest mode: run the historical backtest, write the PDF report,
+    and print a short console summary. Orchestration only — all backtest
+    logic lives in screener.backtest."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    result: BacktestResult = await run_backtest(days=days, holding_days=holding_days)
+    report_path = write_backtest_report(result)
+
+    delta_pp = result.avg_return_pct - result.baseline_avg_return_pct
+    sign = "+" if delta_pp >= 0 else ""
+
+    print(f"\n{'='*60}")
+    print(f"  Backtest: {result.lookback_days} eval days, {result.holding_days}-day hold, "
+          f"threshold {result.alert_threshold:.0%}")
+    print(f"{'='*60}")
+    print(f"  Signals fired : {result.total_signals}")
+    print(f"  Win rate      : {result.win_rate:.2%} ({result.wins}W / {result.losses}L)")
+    print(f"  Avg return    : {result.avg_return_pct:.2f}%")
+    print(f"  Baseline      : {result.baseline_avg_return_pct:.2f}%")
+    print(f"  Signal vs base: {sign}{delta_pp:.2f} pp")
+    print(f"  [PDF] Report written to {report_path}")
+    print()
+
+
 def _start_scheduler() -> None:
     """Start the APScheduler cron loop (imported lazily to keep main.py clean)."""
     from screener.scheduler import start  # implemented in Step 9
@@ -235,12 +291,26 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--once", action="store_true", help="Run once and exit")
     group.add_argument("--ticker", metavar="SYMBOL", help="Debug a single ticker")
+    group.add_argument(
+        "--backtest", action="store_true",
+        help="Run a historical backtest of the current rules over the watchlist",
+    )
+    parser.add_argument(
+        "--days", type=int, default=30,
+        help="Backtest: number of trailing trading days to evaluate (default 30)",
+    )
+    parser.add_argument(
+        "--hold", type=int, default=5,
+        help="Backtest: holding period in trading days per simulated trade (default 5)",
+    )
     args = parser.parse_args()
 
     if args.once:
         asyncio.run(run_screener())
     elif args.ticker:
         asyncio.run(run_ticker_debug(args.ticker.upper()))
+    elif args.backtest:
+        asyncio.run(run_backtest_cli(args.days, args.hold))
     else:
         _start_scheduler()
 

@@ -5,7 +5,7 @@ schedule:
 rules:
   - name: big_tech_or_chip
     weight: 2.0
-    condition: "in_watchlist"
+    condition: "in_watchlist or is_chip"
   - name: oversold_band
     weight: 2.0
     condition: "rsi(14) > 25 and rsi(14) < 40"

@@ -129,10 +129,12 @@ def test_get_quotes_shape():
 
     assert "BIGCO" in result
     meta = result["BIGCO"]
-    assert set(meta.keys()) == {"price_to_book", "change_pct", "market_cap"}
+    assert set(meta.keys()) == {"price_to_book", "change_pct", "market_cap", "industry", "sector"}
     assert meta["price_to_book"] == 3.2
     assert meta["change_pct"] == -5.0
     assert meta["market_cap"] == 20_000_000_000
+    assert meta["industry"] is None
+    assert meta["sector"] is None
 
 
 def test_get_quotes_empty_before_get_symbols_called():
@@ -164,7 +166,29 @@ def test_quote_for_returns_meta_for_arbitrary_symbol():
     )):
         u = LosersUniverse(watchlist=set())
         meta = u.quote_for("NVDA")
-    assert meta == {"price_to_book": 12.0, "change_pct": -4.0, "market_cap": 5e11}
+    assert meta == {
+        "price_to_book": 12.0,
+        "change_pct": -4.0,
+        "market_cap": 5e11,
+        "industry": None,
+        "sector": None,
+    }
+
+
+def test_quote_for_includes_industry_when_present():
+    with patch("screener.universe.losers.yf.Ticker", return_value=_make_ticker(
+        {
+            "regularMarketChangePercent": -4.0,
+            "priceToBook": 12.0,
+            "marketCap": 5e11,
+            "industry": "Semiconductors",
+            "sector": "Technology",
+        }
+    )):
+        u = LosersUniverse(watchlist=set())
+        meta = u.quote_for("SKYT")
+    assert meta["industry"] == "Semiconductors"
+    assert meta["sector"] == "Technology"
 
 
 def test_quote_for_returns_none_on_fetch_error():

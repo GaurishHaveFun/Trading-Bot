@@ -19,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from screener.models import RuleResult, ScreenerRun, Signal
+from screener.models import BacktestResult, RuleResult, ScreenerRun, Signal
 from screener.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -38,6 +38,10 @@ _SUMMARY_HEADER = [
     "Close", "Change %", "RSI-14", "SMA-200", "P/B",
 ]
 _RULE_HEADER = ["Rule", "Pass", "Weight", "Detail"]
+_TRADE_HEADER = [
+    "Ticker", "Signal Date", "Score", "Buy Close",
+    "Sell Date", "Sell Close", "Return %", "Result",
+]
 
 
 def write_report(run: ScreenerRun, output_dir: Path = _OUTPUT_DIR) -> Path:
@@ -102,11 +106,146 @@ def write_ticker_report(
     return path
 
 
-def _build_doc(path: Path, story: list) -> None:
+def write_backtest_report(result: BacktestResult, output_dir: Path = _OUTPUT_DIR) -> Path:
+    """Write a historical backtest report to PDF.
+
+    Writes output/reports/backtest_<UTC_ISO>.pdf (timestamp taken at write
+    time, same `%Y%m%dT%H%M%SZ` convention as write_report) and returns the
+    path written. This is a separate report family from write_report/
+    write_ticker_report — it renders a BacktestResult, not a ScreenerRun.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = output_dir / f"backtest_{ts}.pdf"
+
+    story: list = []
+    story.append(Paragraph("Screener Backtest Report", _TITLE_STYLE))
+    story.append(Spacer(1, 0.1 * inch))
+    story.extend(_backtest_caveats())
+    story.append(Spacer(1, 0.2 * inch))
+    story.extend(_backtest_stats(result))
+    story.append(Spacer(1, 0.3 * inch))
+    story.extend(_trade_table(result.trades))
+
+    _build_doc(path, story, title="Screener Backtest Report")
+
+    logger.info("report_written", path=str(path), signals=result.total_signals)
+    return path
+
+
+def _backtest_caveats() -> list:
+    """Plain-language caveats block so the backtest numbers aren't over-read."""
+    caveats = (
+        "<b>Caveats:</b> This backtest uses a fixed 16-symbol watchlist universe "
+        "(config/watchlist.yaml), not the live day-losers screen used in normal "
+        "runs — the losers screen only reflects today's movers and cannot be "
+        "reconstructed historically. The <b>undervalued_pb</b> rule is dropped "
+        "(price-to-book has no historical daily series), so scores here are out "
+        "of the remaining 4 rules' combined weight (6.5), not the full 8.0 used "
+        "in live runs. The exit rule is a fixed 5-trading-day hold (buy at the "
+        "signal day's close, sell at the close N trading days later) — no "
+        "stop-loss, profit target, or other exit logic is modeled. No "
+        "transaction costs or slippage are included. The sample size (16 "
+        "symbols &times; a few weeks) is small — treat these results as "
+        "illustrative, not a robust or statistically significant backtest."
+    )
+    return [Paragraph(caveats, _SMALL_STYLE)]
+
+
+def _backtest_stats(result: BacktestResult) -> list:
+    """Aggregate stats block: period, config echo, and headline numbers,
+    including the baseline comparison ('did the rules add edge?')."""
+    delta_pp = result.avg_return_pct - result.baseline_avg_return_pct
+    sign = "+" if delta_pp >= 0 else ""
+
+    rows = [
+        ["Period", f"{_fmt_ts(result.start_date)}  –  {_fmt_ts(result.end_date)}"],
+        ["Universe", result.universe],
+        ["Holding period", f"{result.holding_days} trading days"],
+        ["Alert threshold", _fmt_pct(result.alert_threshold * 100)],
+        ["Total signals", str(result.total_signals)],
+        ["Wins / Losses", f"{result.wins} / {result.losses}"],
+        ["Win rate", _fmt_pct(result.win_rate * 100)],
+        ["Avg return per trade", _fmt_pct(result.avg_return_pct)],
+        ["Total return (equal-weight)", _fmt_pct(result.total_return_pct)],
+        ["Best trade", _fmt_pct(result.best_trade_return_pct)],
+        ["Worst trade", _fmt_pct(result.worst_trade_return_pct)],
+        ["Baseline avg forward return (all symbol-days)", _fmt_pct(result.baseline_avg_return_pct)],
+    ]
+
+    table = Table(rows, hAlign="LEFT", colWidths=[2.8 * inch, 3.2 * inch])
+    style = [
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, colors.HexColor("#f2f2f2")]),
+    ]
+    table.setStyle(TableStyle(style))
+
+    delta_color = "#1a7f37" if delta_pp >= 0 else "#c0362c"
+    delta_line = Paragraph(
+        f"<b>Signal avg return vs. baseline: "
+        f"<font color='{delta_color}'>{sign}{delta_pp:.2f} pp</font></b>",
+        _NORMAL_STYLE,
+    )
+
+    return [
+        Paragraph("Summary", _HEADING_STYLE),
+        Spacer(1, 0.1 * inch),
+        table,
+        Spacer(1, 0.15 * inch),
+        delta_line,
+    ]
+
+
+def _trade_table(trades: list) -> list:
+    """Per-trade table, sorted as given (already return-descending from
+    run_backtest). Win/loss cells are colored green/red like _rule_table."""
+    if not trades:
+        return [
+            Paragraph("Trades", _HEADING_STYLE),
+            Spacer(1, 0.1 * inch),
+            Paragraph("No signals fired in this window.", _NORMAL_STYLE),
+        ]
+
+    rows: list[list[Any]] = [_TRADE_HEADER]
+    for t in trades:
+        rows.append([
+            t.ticker,
+            _fmt_ts(t.signal_date),
+            _fmt_pct(t.score * 100),
+            _fmt_num(t.buy_close),
+            _fmt_ts(t.sell_date),
+            _fmt_num(t.sell_close),
+            _fmt_pct(t.return_pct),
+            "WIN" if t.win else "LOSS",
+        ])
+
+    table = Table(rows, repeatRows=1, hAlign="LEFT")
+    style = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2b2f38")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f2f2f2")]),
+    ]
+    for row_idx, t in enumerate(trades, start=1):
+        color = colors.HexColor("#1a7f37") if t.win else colors.HexColor("#c0362c")
+        style.append(("TEXTCOLOR", (6, row_idx), (7, row_idx), color))
+        style.append(("FONTNAME", (6, row_idx), (7, row_idx), "Helvetica-Bold"))
+    table.setStyle(TableStyle(style))
+    return [Paragraph("Trades", _HEADING_STYLE), Spacer(1, 0.1 * inch), table]
+
+
+def _build_doc(path: Path, story: list, title: str = "Stock Screener Report") -> None:
     doc = SimpleDocTemplate(
         str(path),
         pagesize=letter,
-        title="Stock Screener Report",
+        title=title,
     )
     doc.build(story)
 

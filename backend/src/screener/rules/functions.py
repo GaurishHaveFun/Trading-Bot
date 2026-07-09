@@ -76,6 +76,8 @@ def build_symbol_table(
     change_pct = meta.get("change_pct")
     if change_pct is None:
         change_pct = 0.0
+    industry = meta.get("industry") or ""
+    is_chip = "semiconductor" in industry.lower()
 
     return {
         "sma": _make_sma(df),
@@ -90,4 +92,6 @@ def build_symbol_table(
         "price_to_book": price_to_book,
         "change_pct": change_pct,
         "in_watchlist": in_watchlist,
+        "industry": industry,
+        "is_chip": is_chip,
     }
