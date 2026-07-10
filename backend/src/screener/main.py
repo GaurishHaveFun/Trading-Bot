@@ -293,32 +293,15 @@ async def run_backtest_cli(days: int, holding_days: int) -> None:
     print(f"  Baseline      : {result.baseline_avg_return_pct:.2f}%")
     print(f"  Signal vs base: {sign}{delta_pp:.2f} pp")
     print(f"  [PDF] Report written to {report_path}")
-    print()
 
-
-async def run_backtest_cli(days: int, holding_days: int) -> None:
-    """--backtest mode: run the historical backtest, write the PDF report,
-    and print a short console summary. Orchestration only — all backtest
-    logic lives in screener.backtest."""
-    settings = get_settings()
-    configure_logging(settings.log_level)
-
-    result: BacktestResult = await run_backtest(days=days, holding_days=holding_days)
-    report_path = write_backtest_report(result)
-
-    delta_pp = result.avg_return_pct - result.baseline_avg_return_pct
-    sign = "+" if delta_pp >= 0 else ""
-
-    print(f"\n{'='*60}")
-    print(f"  Backtest: {result.lookback_days} eval days, {result.holding_days}-day hold, "
-          f"threshold {result.alert_threshold:.0%}")
-    print(f"{'='*60}")
-    print(f"  Signals fired : {result.total_signals}")
-    print(f"  Win rate      : {result.win_rate:.2%} ({result.wins}W / {result.losses}L)")
-    print(f"  Avg return    : {result.avg_return_pct:.2f}%")
-    print(f"  Baseline      : {result.baseline_avg_return_pct:.2f}%")
-    print(f"  Signal vs base: {sign}{delta_pp:.2f} pp")
-    print(f"  [PDF] Report written to {report_path}")
+    print(f"\n  Per-Rule Attribution:")
+    print(f"  {'Rule':<24} {'Weight':>7}  {'Passed (n/win%/avg%)':<28} {'Failed (n/win%/avg%)':<28} {'Edge':>10}")
+    print(f"  {'-'*100}")
+    for a in result.rule_attribution:
+        passed_str = f"{a.passed_count}/{a.passed_win_rate:.0%}/{a.passed_avg_return_pct:+.2f}%"
+        failed_str = f"{a.failed_count}/{a.failed_win_rate:.0%}/{a.failed_avg_return_pct:+.2f}%"
+        edge_str = f"{a.edge_pct:+.2f} pp"
+        print(f"  {a.rule_name:<24} {a.weight:>7.1f}  {passed_str:<28} {failed_str:<28} {edge_str:>10}")
     print()
 
 

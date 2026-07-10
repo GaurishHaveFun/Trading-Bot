@@ -19,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from screener.models import BacktestResult, RuleResult, ScreenerRun, Signal
+from screener.models import BacktestResult, RuleAttribution, RuleResult, ScreenerRun, Signal
 from screener.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -41,6 +41,9 @@ _RULE_HEADER = ["Rule", "Pass", "Weight", "Detail"]
 _TRADE_HEADER = [
     "Ticker", "Signal Date", "Score", "Buy Close",
     "Sell Date", "Sell Close", "Return %", "Result",
+]
+_ATTRIBUTION_HEADER = [
+    "Rule", "Weight", "Passed (n / win% / avg%)", "Failed (n / win% / avg%)", "Edge",
 ]
 
 _GLOSSARY = [
@@ -147,6 +150,8 @@ def write_backtest_report(result: BacktestResult, output_dir: Path = _OUTPUT_DIR
     story.extend(_backtest_caveats())
     story.append(Spacer(1, 0.2 * inch))
     story.extend(_backtest_stats(result))
+    story.append(Spacer(1, 0.3 * inch))
+    story.extend(_rule_attribution_table(result.rule_attribution))
     story.append(Spacer(1, 0.3 * inch))
     story.extend(_trade_table(result.trades))
 
@@ -262,6 +267,47 @@ def _trade_table(trades: list) -> list:
         style.append(("FONTNAME", (6, row_idx), (7, row_idx), "Helvetica-Bold"))
     table.setStyle(TableStyle(style))
     return [Paragraph("Trades", _HEADING_STYLE), Spacer(1, 0.1 * inch), table]
+
+
+def _rule_attribution_table(attributions: list) -> list:
+    """Per-rule predictive-power table: average forward return on days each
+    rule passed vs. days it didn't, across the whole evaluated window (not
+    just days a signal fired). Edge column colored green/red like the
+    Trades table's WIN/LOSS coloring."""
+    if not attributions:
+        return [
+            Paragraph("Per-Rule Attribution", _HEADING_STYLE),
+            Spacer(1, 0.1 * inch),
+            Paragraph("No rule attribution data.", _NORMAL_STYLE),
+        ]
+
+    rows: list[list[Any]] = [_ATTRIBUTION_HEADER]
+    for a in attributions:
+        rows.append([
+            a.rule_name,
+            _fmt_num(a.weight, decimals=1),
+            f"{a.passed_count} / {_fmt_pct(a.passed_win_rate * 100)} / {_fmt_pct(a.passed_avg_return_pct)}",
+            f"{a.failed_count} / {_fmt_pct(a.failed_win_rate * 100)} / {_fmt_pct(a.failed_avg_return_pct)}",
+            f"{'+' if a.edge_pct >= 0 else ''}{a.edge_pct:.2f} pp",
+        ])
+
+    table = Table(rows, repeatRows=1, hAlign="LEFT")
+    style = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2b2f38")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f2f2f2")]),
+    ]
+    for row_idx, a in enumerate(attributions, start=1):
+        color = colors.HexColor("#1a7f37") if a.edge_pct >= 0 else colors.HexColor("#c0362c")
+        style.append(("TEXTCOLOR", (4, row_idx), (4, row_idx), color))
+        style.append(("FONTNAME", (4, row_idx), (4, row_idx), "Helvetica-Bold"))
+    table.setStyle(TableStyle(style))
+    return [Paragraph("Per-Rule Attribution", _HEADING_STYLE), Spacer(1, 0.1 * inch), table]
 
 
 def _build_doc(path: Path, story: list, title: str = "Stock Screener Report") -> None:

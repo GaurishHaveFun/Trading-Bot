@@ -7,8 +7,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from screener.backtest import evaluate_symbol
+from screener.backtest.engine import _aggregate_rule_attribution
 from screener.config import RuleConfig
-from screener.models import Bar, BacktestResult, BacktestTrade
+from screener.models import Bar, BacktestResult, BacktestTrade, RuleAttribution
 from screener.output.pdf_writer import write_backtest_report
 from screener.rules import RuleEngine
 
@@ -53,7 +54,7 @@ def test_evaluate_symbol_produces_one_trade_with_exact_return():
     bars = _make_bars(n, overrides={signal_index: 200.0})
 
     engine = _engine("close > 150", weight=1.0)
-    trades, forward_returns = evaluate_symbol(
+    trades, forward_returns, rule_evaluations = evaluate_symbol(
         symbol="TEST",
         bars=bars,
         engine=engine,
@@ -79,6 +80,31 @@ def test_evaluate_symbol_produces_one_trade_with_exact_return():
     valid_days = (n - holding_days) - _MIN_BARS + 1
     assert len(forward_returns) == valid_days
 
+    # Per-rule attribution: the rule ("close > 150") passes only on the
+    # signal day itself (index 210), whose forward_return is -50.0. Every
+    # other valid day's OWN close is the flat base 100.0, so the rule fails
+    # on all of them — EXCEPT the day whose forward window's SELL bar lands
+    # on the spike: day (signal_index - holding_days) = 205 buys at the flat
+    # 100.0 close (rule still fails there) but sells at bars[210].close =
+    # 200.0, giving forward_return = (200-100)/100*100 = +100.0. Every other
+    # failed day has both endpoints at the flat 100.0 close, so its forward
+    # return is exactly 0.0.
+    assert "test_rule" in rule_evaluations
+    assert len(rule_evaluations["test_rule"]) == valid_days
+
+    passed_entries = [(p, r) for p, r in rule_evaluations["test_rule"] if p]
+    assert len(passed_entries) == 1
+    assert passed_entries[0][1] == pytest.approx(expected_return)
+
+    failed_entries = [(p, r) for p, r in rule_evaluations["test_rule"] if not p]
+    assert len(failed_entries) == valid_days - 1
+    failed_returns = [r for _, r in failed_entries]
+    nonzero_failed = [r for r in failed_returns if r != pytest.approx(0.0)]
+    assert len(nonzero_failed) == 1
+    assert nonzero_failed[0] == pytest.approx(100.0)  # day 205's sell bar hits the spike
+    zero_failed = [r for r in failed_returns if r == pytest.approx(0.0)]
+    assert len(zero_failed) == valid_days - 2
+
 
 # --- signal never fires, but the baseline series is still populated ---
 
@@ -88,7 +114,7 @@ def test_evaluate_symbol_no_signal_still_populates_baseline():
     bars = _make_bars(n, base_close=100.0)  # never exceeds threshold
 
     engine = _engine("close > 500", weight=1.0)  # impossible to satisfy
-    trades, forward_returns = evaluate_symbol(
+    trades, forward_returns, rule_evaluations = evaluate_symbol(
         symbol="TEST",
         bars=bars,
         engine=engine,
@@ -116,7 +142,7 @@ def test_last_holding_days_bars_are_excluded():
     bars = _make_bars(n, overrides={excluded_index: 500.0})
 
     engine = _engine("close > 150", weight=1.0)
-    trades, forward_returns = evaluate_symbol(
+    trades, forward_returns, rule_evaluations = evaluate_symbol(
         symbol="TEST",
         bars=bars,
         engine=engine,
@@ -141,7 +167,7 @@ def test_eval_days_limits_the_window():
     bars = _make_bars(n, base_close=100.0)
     engine = _engine("close > 500", weight=1.0)
 
-    _, forward_returns = evaluate_symbol(
+    _, forward_returns, _ = evaluate_symbol(
         symbol="TEST",
         bars=bars,
         engine=engine,
@@ -153,9 +179,92 @@ def test_eval_days_limits_the_window():
     assert len(forward_returns) == 10
 
 
+# --- _aggregate_rule_attribution ---
+
+def test_aggregate_rule_attribution_mixed_passed_failed():
+    rule_configs = [RuleConfig(name="rule_a", weight=2.0, condition="close > 0")]
+    rule_evaluations = {
+        "rule_a": [
+            (True, 5.0), (True, -1.0), (True, 3.0),   # passed: avg=2.333.., win_rate=2/3
+            (False, -2.0), (False, 4.0),               # failed: avg=1.0, win_rate=1/2
+        ]
+    }
+    result = _aggregate_rule_attribution(rule_configs, rule_evaluations)
+    assert len(result) == 1
+    a = result[0]
+    assert a.rule_name == "rule_a"
+    assert a.weight == 2.0
+    assert a.passed_count == 3
+    assert a.passed_win_rate == pytest.approx(2 / 3)
+    assert a.passed_avg_return_pct == pytest.approx((5.0 - 1.0 + 3.0) / 3)
+    assert a.failed_count == 2
+    assert a.failed_win_rate == pytest.approx(1 / 2)
+    assert a.failed_avg_return_pct == pytest.approx((-2.0 + 4.0) / 2)
+    assert a.edge_pct == pytest.approx(a.passed_avg_return_pct - a.failed_avg_return_pct)
+
+
+def test_aggregate_rule_attribution_all_passed_no_failed_data():
+    rule_configs = [RuleConfig(name="rule_a", weight=1.0, condition="close > 0")]
+    rule_evaluations = {"rule_a": [(True, 5.0), (True, 3.0)]}
+    result = _aggregate_rule_attribution(rule_configs, rule_evaluations)
+    a = result[0]
+    assert a.passed_count == 2
+    assert a.passed_avg_return_pct == pytest.approx(4.0)
+    assert a.failed_count == 0
+    assert a.failed_win_rate == 0.0
+    assert a.failed_avg_return_pct == 0.0
+    assert a.edge_pct == 0.0
+
+
+def test_aggregate_rule_attribution_all_failed_no_passed_data():
+    rule_configs = [RuleConfig(name="rule_a", weight=1.0, condition="close > 0")]
+    rule_evaluations = {"rule_a": [(False, -5.0), (False, -3.0)]}
+    result = _aggregate_rule_attribution(rule_configs, rule_evaluations)
+    a = result[0]
+    assert a.failed_count == 2
+    assert a.failed_avg_return_pct == pytest.approx(-4.0)
+    assert a.passed_count == 0
+    assert a.passed_win_rate == 0.0
+    assert a.passed_avg_return_pct == 0.0
+    assert a.edge_pct == 0.0
+
+
+def test_aggregate_rule_attribution_no_data_for_rule():
+    rule_configs = [RuleConfig(name="rule_a", weight=1.5, condition="close > 0")]
+    result = _aggregate_rule_attribution(rule_configs, {})
+    assert len(result) == 1
+    a = result[0]
+    assert a.rule_name == "rule_a"
+    assert a.weight == 1.5
+    assert a.passed_count == 0
+    assert a.passed_win_rate == 0.0
+    assert a.passed_avg_return_pct == 0.0
+    assert a.failed_count == 0
+    assert a.failed_win_rate == 0.0
+    assert a.failed_avg_return_pct == 0.0
+    assert a.edge_pct == 0.0
+
+
+def test_aggregate_rule_attribution_preserves_rule_config_order():
+    rule_configs = [
+        RuleConfig(name="rule_c", weight=1.0, condition="close > 0"),
+        RuleConfig(name="rule_a", weight=1.0, condition="close > 0"),
+        RuleConfig(name="rule_b", weight=1.0, condition="close > 0"),
+    ]
+    rule_evaluations = {
+        "rule_a": [(True, 1.0)],
+        "rule_b": [],
+        # rule_c intentionally absent from the dict
+    }
+    result = _aggregate_rule_attribution(rule_configs, rule_evaluations)
+    assert [a.rule_name for a in result] == ["rule_c", "rule_a", "rule_b"]
+
+
 # --- write_backtest_report: hand-built result, PDF magic bytes ---
 
-def _make_result(trades: list[BacktestTrade]) -> BacktestResult:
+def _make_result(
+    trades: list[BacktestTrade], rule_attribution: list | None = None
+) -> BacktestResult:
     wins = sum(1 for t in trades if t.win)
     losses = len(trades) - wins
     returns = [t.return_pct for t in trades]
@@ -176,6 +285,7 @@ def _make_result(trades: list[BacktestTrade]) -> BacktestResult:
         worst_trade_return_pct=min(returns, default=0.0),
         baseline_avg_return_pct=0.85,
         trades=trades,
+        rule_attribution=rule_attribution or [],
     )
 
 
@@ -202,6 +312,46 @@ def test_write_backtest_report_creates_pdf(tmp_path):
         _make_trade("AMD", 1.0),    # win
     ]
     result = _make_result(trades)
+    path = write_backtest_report(result, output_dir=tmp_path)
+
+    assert path.exists()
+    assert path.suffix == ".pdf"
+    assert path.stat().st_size > 0
+    with open(path, "rb") as f:
+        assert f.read(4) == b"%PDF"
+    assert path.name.startswith("backtest_")
+
+
+def test_write_backtest_report_with_rule_attribution(tmp_path):
+    trades = [
+        _make_trade("AAPL", 5.2),
+        _make_trade("NVDA", -3.1),
+    ]
+    attributions = [
+        RuleAttribution(
+            rule_name="near_52w_low",
+            weight=1.5,
+            passed_count=12,
+            passed_win_rate=0.58,
+            passed_avg_return_pct=1.9,
+            failed_count=40,
+            failed_win_rate=0.51,
+            failed_avg_return_pct=0.6,
+            edge_pct=1.3,
+        ),
+        RuleAttribution(
+            rule_name="quality_uptrend",
+            weight=1.0,
+            passed_count=20,
+            passed_win_rate=0.45,
+            passed_avg_return_pct=-0.8,
+            failed_count=32,
+            failed_win_rate=0.56,
+            failed_avg_return_pct=1.4,
+            edge_pct=-2.2,  # negative edge -> exercises the red-coloring path
+        ),
+    ]
+    result = _make_result(trades, rule_attribution=attributions)
     path = write_backtest_report(result, output_dir=tmp_path)
 
     assert path.exists()

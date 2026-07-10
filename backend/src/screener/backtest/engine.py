@@ -24,9 +24,9 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from screener.config import get_settings, load_rules_config, load_watchlist
+from screener.config import RuleConfig, get_settings, load_rules_config, load_watchlist
 from screener.data import BarCache, YFinanceProvider
-from screener.models import Bar, BacktestResult, BacktestTrade
+from screener.models import Bar, BacktestResult, BacktestTrade, RuleAttribution
 from screener.rules import RuleEngine
 from screener.utils.logging import get_logger
 
@@ -53,7 +53,7 @@ def evaluate_symbol(
     threshold: float,
     holding_days: int,
     eval_days: int,
-) -> tuple[list[BacktestTrade], list[float]]:
+) -> tuple[list[BacktestTrade], list[float], dict[str, list[tuple[bool, float]]]]:
     """Pure, offline-testable core: walk the last `eval_days` valid evaluation
     points in `bars` (ascending order) and simulate a fixed-hold trade for
     every day the rules score at/above `threshold`.
@@ -62,10 +62,18 @@ def evaluate_symbol(
       - i >= _MIN_BARS - 1 (enough trailing history for indicators), and
       - i + holding_days < len(bars) (enough forward bars for the exit).
 
-    Returns (trades, all_forward_returns) — the second list contains the
-    holding_days-forward return for EVERY valid evaluation day regardless of
-    whether a signal fired, used by the caller to compute the baseline
-    "did the rules add edge over just holding anything" comparison.
+    Returns (trades, all_forward_returns, rule_evaluations):
+      - trades: one BacktestTrade per day the composite score cleared
+        `threshold`.
+      - all_forward_returns: the holding_days-forward return for EVERY valid
+        evaluation day regardless of whether a signal fired, used by the
+        caller to compute the baseline "did the rules add edge over just
+        holding anything" comparison.
+      - rule_evaluations: dict mapping rule_name -> [(passed, forward_return), ...],
+        with one entry per valid evaluation day per rule (the same
+        forward_return value for that day is paired with every rule's
+        individual pass/fail outcome), used to compute per-rule return
+        attribution independent of whether the composite score fired.
     """
     n = len(bars)
     valid_indices = [i for i in range(n) if i >= _MIN_BARS - 1 and i + holding_days < n]
@@ -73,6 +81,7 @@ def evaluate_symbol(
 
     trades: list[BacktestTrade] = []
     forward_returns: list[float] = []
+    rule_evaluations: dict[str, list[tuple[bool, float]]] = {}
 
     for i in eval_indices:
         buy_bar = bars[i]
@@ -83,6 +92,9 @@ def evaluate_symbol(
         # No look-ahead: only bars up to and including day i are visible.
         results = engine.evaluate(symbol, bars[: i + 1], meta=None, watchlist=watchlist)
         score = engine.score(results)
+
+        for r in results:
+            rule_evaluations.setdefault(r.rule_name, []).append((r.passed, forward_return))
 
         if score >= threshold:
             rules_passed = sum(1 for r in results if r.passed)
@@ -101,7 +113,63 @@ def evaluate_symbol(
                 )
             )
 
-    return trades, forward_returns
+    return trades, forward_returns, rule_evaluations
+
+
+def _aggregate_rule_attribution(
+    rule_configs: list[RuleConfig],
+    rule_evaluations: dict[str, list[tuple[bool, float]]],
+) -> list[RuleAttribution]:
+    """Pure, offline-testable aggregation: for each rule config (in the given
+    order, which determines display order downstream), split its recorded
+    (passed, forward_return) observations into passed/failed groups and
+    compute win rate + average forward return per side. A win is
+    forward_return > 0 (matching BacktestTrade.win's definition). If either
+    side has zero observations, that side's win_rate/avg_return_pct is 0.0
+    and edge_pct is 0.0 (see RuleAttribution's docstring)."""
+    attributions: list[RuleAttribution] = []
+    for rule in rule_configs:
+        observations = rule_evaluations.get(rule.name, [])
+        passed_returns = [r for passed, r in observations if passed]
+        failed_returns = [r for passed, r in observations if not passed]
+
+        passed_count = len(passed_returns)
+        failed_count = len(failed_returns)
+
+        if passed_count:
+            passed_win_rate = sum(1 for r in passed_returns if r > 0) / passed_count
+            passed_avg_return_pct = sum(passed_returns) / passed_count
+        else:
+            passed_win_rate = 0.0
+            passed_avg_return_pct = 0.0
+
+        if failed_count:
+            failed_win_rate = sum(1 for r in failed_returns if r > 0) / failed_count
+            failed_avg_return_pct = sum(failed_returns) / failed_count
+        else:
+            failed_win_rate = 0.0
+            failed_avg_return_pct = 0.0
+
+        edge_pct = (
+            passed_avg_return_pct - failed_avg_return_pct
+            if passed_count and failed_count
+            else 0.0
+        )
+
+        attributions.append(
+            RuleAttribution(
+                rule_name=rule.name,
+                weight=rule.weight,
+                passed_count=passed_count,
+                passed_win_rate=passed_win_rate,
+                passed_avg_return_pct=passed_avg_return_pct,
+                failed_count=failed_count,
+                failed_win_rate=failed_win_rate,
+                failed_avg_return_pct=failed_avg_return_pct,
+                edge_pct=edge_pct,
+            )
+        )
+    return attributions
 
 
 async def run_backtest(days: int = 30, holding_days: int = 5) -> BacktestResult:
@@ -144,6 +212,7 @@ async def run_backtest(days: int = 30, holding_days: int = 5) -> BacktestResult:
 
     all_trades: list[BacktestTrade] = []
     all_forward_returns: list[float] = []
+    combined_rule_evaluations: dict[str, list[tuple[bool, float]]] = {}
 
     for item in results:
         if isinstance(item, Exception):
@@ -154,7 +223,7 @@ async def run_backtest(days: int = 30, holding_days: int = 5) -> BacktestResult:
             logger.warning("insufficient_bars", symbol=symbol, count=len(bars))
             continue
 
-        trades, forward_returns = evaluate_symbol(
+        trades, forward_returns, rule_evaluations = evaluate_symbol(
             symbol,
             bars,
             engine,
@@ -165,6 +234,8 @@ async def run_backtest(days: int = 30, holding_days: int = 5) -> BacktestResult:
         )
         all_trades.extend(trades)
         all_forward_returns.extend(forward_returns)
+        for rule_name, observations in rule_evaluations.items():
+            combined_rule_evaluations.setdefault(rule_name, []).extend(observations)
 
     cache.close()
 
@@ -181,6 +252,7 @@ async def run_backtest(days: int = 30, holding_days: int = 5) -> BacktestResult:
     baseline_avg_return_pct = (
         sum(all_forward_returns) / len(all_forward_returns) if all_forward_returns else 0.0
     )
+    rule_attribution = _aggregate_rule_attribution(filtered_rules, combined_rule_evaluations)
 
     result = BacktestResult(
         universe="watchlist",
@@ -199,6 +271,7 @@ async def run_backtest(days: int = 30, holding_days: int = 5) -> BacktestResult:
         worst_trade_return_pct=worst_trade_return_pct,
         baseline_avg_return_pct=baseline_avg_return_pct,
         trades=all_trades,
+        rule_attribution=rule_attribution,
     )
 
     logger.info(

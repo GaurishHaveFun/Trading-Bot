@@ -136,6 +136,29 @@ class BacktestTrade(BaseModel):
         return v.astimezone(timezone.utc)
 
 
+class RuleAttribution(BaseModel):
+    """Per-rule predictive-power breakdown from a historical backtest: average
+    forward return on days a rule passed vs. days it didn't, across the whole
+    evaluated window (not just days the composite score crossed the alert
+    threshold). Additive/diagnostic only — not part of the locked ScreenerRun
+    JSON schema.
+
+    If a rule always passed or never passed across the whole window (one side
+    has zero observations), that side's win_rate/avg_return_pct is 0.0 (not
+    NaN) and edge_pct is also 0.0, since a passed-vs-failed comparison is
+    meaningless with no data on one side."""
+
+    rule_name: str
+    weight: float
+    passed_count: int
+    passed_win_rate: float
+    passed_avg_return_pct: float
+    failed_count: int
+    failed_win_rate: float
+    failed_avg_return_pct: float
+    edge_pct: float  # passed_avg_return_pct - failed_avg_return_pct
+
+
 class BacktestResult(BaseModel):
     """Aggregate output of a historical backtest run. Not part of the
     locked ScreenerRun JSON schema — a separate, additive model."""
@@ -156,6 +179,7 @@ class BacktestResult(BaseModel):
     worst_trade_return_pct: float
     baseline_avg_return_pct: float
     trades: list[BacktestTrade] = []
+    rule_attribution: list[RuleAttribution] = []
 
     @field_validator("start_date", "end_date")
     @classmethod
