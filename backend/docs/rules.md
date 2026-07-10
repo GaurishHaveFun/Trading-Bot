@@ -73,6 +73,9 @@ build_symbol_table(
 | `sma_volume` | callable `(period: int) -> float` | Closure over `df`, calls `indicators.library.sma_volume(df, period)` |
 | `low_52w` | callable `(period: int = 252) -> float` | Closure over `df`, calls `indicators.library.low_52w(df, period)` |
 | `high_52w` | callable `(period: int = 252) -> float` | Closure over `df`, calls `indicators.library.high_52w(df, period)` |
+| `macd_line` | callable `(fast: int = 12, slow: int = 26, signal: int = 9) -> float` | Closure over `df`, calls `indicators.library.macd_line(df, fast, slow, signal)` |
+| `macd_signal_line` | callable `(fast: int = 12, slow: int = 26, signal: int = 9) -> float` | Closure over `df`, calls `indicators.library.macd_signal_line(df, fast, slow, signal)` |
+| `macd_histogram` | callable `(fast: int = 12, slow: int = 26, signal: int = 9) -> float` | Closure over `df`, calls `indicators.library.macd_histogram(df, fast, slow, signal)` |
 | `close` | `float` | Latest close price |
 | `volume` | `float` | Latest volume |
 | `price_to_book` | `float` | From `meta["price_to_book"]`, or `inf` if missing |
@@ -103,9 +106,9 @@ score = Σ weight(r) for r in results if r.passed
 - Returns a value in `[0.0, 1.0]`.
 - Higher weight rules contribute proportionally more to the score.
 
-Example with spec weights (2.0 + 2.0 + 1.5 + 1.0 + 1.5 = 8.0 total: `big_tech_or_chip`, `oversold_band`, `quality_uptrend`, `near_52w_low`, `undervalued_pb`):
-- All 5 pass → score = 1.0
-- Only `near_52w_low` passes → score = 1.0 / 8.0 = 0.125
+Example with spec weights (2.0 + 2.0 + 1.5 + 1.0 + 1.0 + 0.5 + 1.5 = 9.5 total: `big_tech_or_chip`, `oversold_band`, `quality_uptrend`, `medium_term_momentum`, `macd_bullish`, `near_52w_low`, `undervalued_pb`):
+- All 7 pass → score = 1.0
+- Only `near_52w_low` passes → score = 0.5 / 9.5 ≈ 0.0526
 
 ---
 
@@ -129,7 +132,9 @@ Example with spec weights (2.0 + 2.0 + 1.5 + 1.0 + 1.5 = 8.0 total: `big_tech_or
 - `low_52w_<period>` — e.g. `low_52w_252`
 - `high_52w_<period>` — e.g. `high_52w_252`
 
-Values are rounded to 4 decimal places. Parsing uses a simple regex `name\((\d+)\)` — sufficient for the current rule grammar.
+Values are rounded to 4 decimal places. Parsing uses a simple regex `name\((\d+)\)` — sufficient for period-parameterized indicators.
+
+**Conditionally included, zero-arg MACD functions** (when the function name with empty parens appears in the condition string, e.g. `macd_line()`): `macd_line`, `macd_signal_line`, `macd_histogram`. These are handled in a separate block in `_extract_detail()` since the period-regex above expects a literal integer argument and can't match empty parens — each is only added if its name is actually referenced in the condition, mirroring the period-indicator loop's "only what's used" behavior. Values are rounded to 4 decimal places using the same try/except-pass safety as the period-based loop.
 
 **Error case:** If `aeval.error` is non-empty or the outcome is `None`, the detail dict contains `{"error": [...]}` instead of indicator values.
 
@@ -147,7 +152,7 @@ rules:
     condition: "ema(20) > sma(50)"
 ```
 
-3. The condition string may use any of: `sma(n)`, `ema(n)`, `rsi(n)`, `atr(n)`, `sma_volume(n)`, `low_52w(n)`, `high_52w(n)`, `close`, `volume`, `price_to_book`, `change_pct`, `in_watchlist`, `industry`, `is_chip`, and standard Python arithmetic/comparison operators.
+3. The condition string may use any of: `sma(n)`, `ema(n)`, `rsi(n)`, `atr(n)`, `sma_volume(n)`, `low_52w(n)`, `high_52w(n)`, `macd_line()`, `macd_signal_line()`, `macd_histogram()`, `close`, `volume`, `price_to_book`, `change_pct`, `in_watchlist`, `industry`, `is_chip`, and standard Python arithmetic/comparison operators.
 4. No code changes required — `RuleEngine` reads the list from the loaded `RulesConfig` at instantiation.
 5. Add a unit test in `tests/test_rules.py` exercising the new condition against synthetic bars.
 

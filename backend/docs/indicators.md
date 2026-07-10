@@ -26,6 +26,7 @@ All functions assume the caller has already enforced the 200-bar minimum (`_MIN_
 | SMA Volume| 20     | 20                  |
 | Low 52w   | 252    | 1 (`min_periods=1`) |
 | High 52w  | 252    | 1 (`min_periods=1`) |
+| MACD line/signal/histogram | 12/26/9 | 26 (slow EMA is the tightest constraint) |
 
 200 bars covers all cases — SMA(200) is the tightest constraint, needing exactly 200, which is why `_MIN_BARS` is set to 200. If a caller passes fewer rows, the return value may be `NaN` — that would be a caller bug, not a library bug.
 
@@ -113,6 +114,44 @@ Uses `min_periods=1` so tickers with less than `period` bars of history still re
 
 ---
 
+### `macd_line(df, fast=12, slow=26, signal=9) -> float`
+
+MACD line (fast EMA minus slow EMA) of the `close` column, latest scalar. Column pulled from the `ta.macd()` result is built dynamically as `f"MACD_{fast}_{slow}_{signal}"`.
+
+Wraps: `pandas_ta.macd(close, fast=fast, slow=slow, signal=signal)`
+
+**Parameters:** `fast`, `slow`, `signal` — integer EMA spans (standard: 12, 26, 9).
+
+**Used in rules:** `macd_bullish` (`macd_line() > macd_signal_line()`).
+
+---
+
+### `macd_signal_line(df, fast=12, slow=26, signal=9) -> float`
+
+MACD signal line (an EMA of the MACD line) of the `close` column, latest scalar. Column pulled from the `ta.macd()` result is built dynamically as `f"MACDs_{fast}_{slow}_{signal}"`.
+
+Wraps: `pandas_ta.macd(close, fast=fast, slow=slow, signal=signal)`
+
+**Parameters:** `fast`, `slow`, `signal` — integer EMA spans (standard: 12, 26, 9).
+
+**Used in rules:** `macd_bullish` (`macd_line() > macd_signal_line()`).
+
+---
+
+### `macd_histogram(df, fast=12, slow=26, signal=9) -> float`
+
+MACD histogram (MACD line minus signal line) of the `close` column, latest scalar. Column pulled from the `ta.macd()` result is built dynamically as `f"MACDh_{fast}_{slow}_{signal}"`.
+
+Wraps: `pandas_ta.macd(close, fast=fast, slow=slow, signal=signal)`
+
+**Parameters:** `fast`, `slow`, `signal` — integer EMA spans (standard: 12, 26, 9).
+
+**Used in rules:** none currently — no rule in `config/rules.yaml` calls `macd_histogram()` directly (it's exposed for future rules/debugging; `macd_bullish` only uses `macd_line()`/`macd_signal_line()`).
+
+Note: all three MACD functions independently recompute `ta.macd()` on every call rather than sharing/caching the result — this matches the existing convention in this file (every indicator recomputes from scratch per call).
+
+---
+
 ### `latest_close(df) -> float`
 
 Returns the single most recent close price. No computation — just `df["close"].iloc[-1]` cast to `float`.
@@ -137,8 +176,9 @@ Returns the single most recent volume. Cast to `int` (volumes are always whole n
 
 ```python
 from screener.indicators.library import (
-    sma, ema, rsi, atr, sma_volume, latest_close, latest_volume
+    sma, ema, rsi, atr, sma_volume, latest_close, latest_volume,
+    macd_line, macd_signal_line, macd_histogram,
 )
 ```
 
-All seven functions are re-exported from the package root so the rule engine can import cleanly with `from screener.indicators import sma, rsi, ...`.
+All ten functions are re-exported from the package root so the rule engine can import cleanly with `from screener.indicators import sma, rsi, ...`.

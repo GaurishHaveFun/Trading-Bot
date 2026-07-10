@@ -29,7 +29,7 @@ trading-bot/
     │   ├── scheduler.py      # APScheduler cron loop
     │   ├── universe/         # UniverseProvider base + StaticUniverse + LosersUniverse + SP500Universe
     │   ├── data/             # DataProvider base + BarCache/FundamentalsCache (SQLite) + YFinanceProvider + FundamentalsProvider
-    │   ├── indicators/       # library.py: sma, ema, rsi, atr, sma_volume, low_52w, high_52w
+    │   ├── indicators/       # library.py: sma, ema, rsi, atr, sma_volume, low_52w, high_52w, macd_line, macd_signal_line, macd_histogram
     │   ├── rules/            # engine.py + functions.py + quality_gate.py (asteval-powered)
     │   ├── output/           # json_writer.py + pdf_writer.py
     │   ├── backtest/         # engine.py: historical backtest of current rules over the watchlist
@@ -100,7 +100,9 @@ Future API keys (stubbed in .env.example): `FINNHUB_API_KEY`, `ALPACA_KEY`, `ALP
 | big_tech_or_chip | 2.0 | `in_watchlist or is_chip` |
 | oversold_band | 2.0 | `rsi(14) > 25 and rsi(14) < 40` |
 | quality_uptrend | 1.5 | `close > sma(200)` |
-| near_52w_low | 1.0 | `close <= low_52w(252) * 1.15` |
+| medium_term_momentum | 1.0 | `sma(50) > sma(100)` |
+| macd_bullish | 1.0 | `macd_line() > macd_signal_line()` |
+| near_52w_low | 0.5 | `close <= low_52w(252) * 1.15` |
 | undervalued_pb | 1.5 | `price_to_book < 4` |
 
 ## Development Workflow

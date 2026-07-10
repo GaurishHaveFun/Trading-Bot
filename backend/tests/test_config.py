@@ -17,10 +17,10 @@ WATCHLIST_YAML = Path(__file__).parent.parent / "config" / "watchlist.yaml"
 QUALITY_SCREEN_YAML = Path(__file__).parent.parent / "config" / "quality_screen.yaml"
 
 
-def test_load_rules_config_parses_five_rules():
+def test_load_rules_config_parses_seven_rules():
     config = load_rules_config(RULES_YAML)
     assert isinstance(config, RulesConfig)
-    assert len(config.rules) == 5
+    assert len(config.rules) == 7
 
 
 def test_rule_names():
@@ -29,6 +29,8 @@ def test_rule_names():
     assert "big_tech_or_chip" in names
     assert "oversold_band" in names
     assert "quality_uptrend" in names
+    assert "medium_term_momentum" in names
+    assert "macd_bullish" in names
     assert "near_52w_low" in names
     assert "undervalued_pb" in names
 
@@ -39,6 +41,8 @@ def test_rule_weights():
     assert weight_map["big_tech_or_chip"] == 2.0
     assert weight_map["oversold_band"] == 2.0
     assert weight_map["quality_uptrend"] == 1.5
+    assert weight_map["medium_term_momentum"] == 1.0
+    assert weight_map["macd_bullish"] == 1.0
     assert weight_map["near_52w_low"] == 0.5
     assert weight_map["undervalued_pb"] == 1.5
 

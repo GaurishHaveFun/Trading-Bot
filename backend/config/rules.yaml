@@ -15,6 +15,14 @@ rules:
     weight: 1.5
     condition: "close > sma(200)"
     description: "Trading above its long-term (200-day) average price — a sign of a healthy uptrend."
+  - name: medium_term_momentum
+    weight: 1.0
+    condition: "sma(50) > sma(100)"
+    description: "The 50-day average is trending above the 100-day average — an early sign of bullish momentum, ahead of the slower long-term uptrend check."
+  - name: macd_bullish
+    weight: 1.0
+    condition: "macd_line() > macd_signal_line()"
+    description: "The MACD line (12-day EMA minus 26-day EMA) is above its 9-day signal line — a classic bullish momentum crossover state."
   - name: near_52w_low
     weight: 0.5
     condition: "close <= low_52w(252) * 1.15"

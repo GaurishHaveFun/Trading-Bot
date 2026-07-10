@@ -51,6 +51,24 @@ def sma_volume(df: pd.DataFrame, period: int) -> float:
     return float(result.iloc[-1])
 
 
+def macd_line(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> float:
+    """MACD line (fast EMA minus slow EMA) of close, latest scalar."""
+    result = ta.macd(_close(df), fast=fast, slow=slow, signal=signal)
+    return float(result[f"MACD_{fast}_{slow}_{signal}"].iloc[-1])
+
+
+def macd_signal_line(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> float:
+    """MACD signal line (EMA of the MACD line) of close, latest scalar."""
+    result = ta.macd(_close(df), fast=fast, slow=slow, signal=signal)
+    return float(result[f"MACDs_{fast}_{slow}_{signal}"].iloc[-1])
+
+
+def macd_histogram(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> float:
+    """MACD histogram (MACD line minus signal line) of close, latest scalar."""
+    result = ta.macd(_close(df), fast=fast, slow=slow, signal=signal)
+    return float(result[f"MACDh_{fast}_{slow}_{signal}"].iloc[-1])
+
+
 def low_52w(df: pd.DataFrame, period: int = 252) -> float:
     """Rolling low over `period` bars (default ~52 weeks of trading days), latest scalar.
 

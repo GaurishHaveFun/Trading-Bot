@@ -16,6 +16,9 @@ from screener.indicators.library import (
     latest_volume,
     low_52w,
     high_52w,
+    macd_line,
+    macd_signal_line,
+    macd_histogram,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "aapl_sample.csv"
@@ -118,3 +121,30 @@ def test_high_52w_never_nan_when_period_exceeds_available_bars(df):
 
 def test_low_52w_le_high_52w(df):
     assert low_52w(df, period=200) <= high_52w(df, period=200)
+
+
+# --- macd_line / macd_signal_line / macd_histogram ---
+# Uses the aapl_sample.csv fixture (real varying prices) — MACD needs price
+# movement to be meaningful, unlike a flat-price fixture.
+
+def test_macd_line_returns_finite_float(df):
+    result = macd_line(df)
+    assert isinstance(result, float)
+    assert result == result  # NaN check (NaN != NaN)
+
+
+def test_macd_signal_line_returns_finite_float(df):
+    result = macd_signal_line(df)
+    assert isinstance(result, float)
+    assert result == result  # NaN check
+
+
+def test_macd_histogram_returns_finite_float(df):
+    result = macd_histogram(df)
+    assert isinstance(result, float)
+    assert result == result  # NaN check
+
+
+def test_macd_histogram_equals_line_minus_signal(df):
+    """Definitional property of MACD: histogram = line - signal."""
+    assert macd_histogram(df) == pytest.approx(macd_line(df) - macd_signal_line(df))

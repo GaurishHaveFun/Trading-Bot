@@ -142,8 +142,8 @@ def test_invalid_condition_returns_failed_result(bars_250):
     assert results[0].passed is False
 
 
-def test_all_five_spec_rules():
-    """Evaluate all 5 buy-the-dip rules from the spec against known bars."""
+def test_all_seven_spec_rules():
+    """Evaluate all 7 buy-the-dip rules from the spec against known bars."""
     from screener.config import load_rules_config
     from pathlib import Path
     rules_config = load_rules_config(Path("config/rules.yaml"))
@@ -152,15 +152,23 @@ def test_all_five_spec_rules():
     # in_watchlist=False (no watchlist passed) → big_tech_or_chip fails
     # rsi(14) will be ~50 (neutral) → oversold_band (25 < rsi < 40) fails
     # sma(200)=100 → close > sma(200) fails (equal, not greater)
+    # sma(50) == sma(100) == 100 (flat bars) → medium_term_momentum fails
+    #   (condition is strict >, not >=)
+    # MACD on perfectly flat prices has zero price movement, so both
+    # macd_line and macd_signal_line are exactly 0.0 (verified directly
+    # against pandas_ta — no float-precision surprise) → macd_bullish fails
+    #   for the same "equal, not strictly greater" reason
     # low_52w(252)=98 (constant low) → close <= low_52w*1.15 passes
     # price_to_book defaults to inf (no meta) → undervalued_pb fails
     bars = _make_bars_simple(250, close=100.0, volume=2_000_000)
     results = engine.evaluate("AAPL", bars)
-    assert len(results) == 5
+    assert len(results) == 7
     names = [r.rule_name for r in results]
     assert "big_tech_or_chip" in names
     assert "oversold_band" in names
     assert "quality_uptrend" in names
+    assert "medium_term_momentum" in names
+    assert "macd_bullish" in names
     assert "near_52w_low" in names
     assert "undervalued_pb" in names
     # Score must be between 0 and 1

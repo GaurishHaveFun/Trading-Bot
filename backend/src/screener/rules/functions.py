@@ -11,6 +11,9 @@ from screener.indicators.library import (
     sma_volume as _sma_volume,
     low_52w as _low_52w,
     high_52w as _high_52w,
+    macd_line as _macd_line,
+    macd_signal_line as _macd_signal_line,
+    macd_histogram as _macd_histogram,
 )
 
 
@@ -56,6 +59,24 @@ def _make_high_52w(df: pd.DataFrame):
     return high_52w
 
 
+def _make_macd_line(df: pd.DataFrame):
+    def macd_line(fast: int = 12, slow: int = 26, signal: int = 9) -> float:
+        return _macd_line(df, fast, slow, signal)
+    return macd_line
+
+
+def _make_macd_signal_line(df: pd.DataFrame):
+    def macd_signal_line(fast: int = 12, slow: int = 26, signal: int = 9) -> float:
+        return _macd_signal_line(df, fast, slow, signal)
+    return macd_signal_line
+
+
+def _make_macd_histogram(df: pd.DataFrame):
+    def macd_histogram(fast: int = 12, slow: int = 26, signal: int = 9) -> float:
+        return _macd_histogram(df, fast, slow, signal)
+    return macd_histogram
+
+
 def build_symbol_table(
     df: pd.DataFrame,
     close: float,
@@ -87,6 +108,9 @@ def build_symbol_table(
         "sma_volume": _make_sma_volume(df),
         "low_52w": _make_low_52w(df),
         "high_52w": _make_high_52w(df),
+        "macd_line": _make_macd_line(df),
+        "macd_signal_line": _make_macd_signal_line(df),
+        "macd_histogram": _make_macd_histogram(df),
         "close": close,
         "volume": volume,
         "price_to_book": price_to_book,

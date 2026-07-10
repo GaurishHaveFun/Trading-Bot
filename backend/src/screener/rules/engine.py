@@ -147,4 +147,16 @@ def _extract_detail(condition: str, symbol_table: dict) -> dict:
                     detail[key] = round(val, 4)
                 except Exception:
                     pass
+
+    # MACD functions are zero-arg (default-valued) in condition strings,
+    # e.g. `macd_line() > macd_signal_line()` — the period-regex loop above
+    # can't match empty parens, so handle these separately.
+    for name in ("macd_line", "macd_signal_line", "macd_histogram"):
+        if name + "(" in condition:
+            try:
+                fn = symbol_table[name]
+                val = fn()
+                detail[name] = round(val, 4)
+            except Exception:
+                pass
     return detail
