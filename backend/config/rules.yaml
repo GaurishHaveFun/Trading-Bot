@@ -16,7 +16,7 @@ rules:
     condition: "close > sma(200)"
     description: "Trading above its long-term (200-day) average price — a sign of a healthy uptrend."
   - name: near_52w_low
-    weight: 1.0
+    weight: 0.5
     condition: "close <= low_52w(252) * 1.15"
     description: "Trading close to its lowest price of the past year (within 15% of the 52-week low)."
   - name: undervalued_pb

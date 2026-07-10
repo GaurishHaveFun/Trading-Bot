@@ -39,7 +39,7 @@ def test_rule_weights():
     assert weight_map["big_tech_or_chip"] == 2.0
     assert weight_map["oversold_band"] == 2.0
     assert weight_map["quality_uptrend"] == 1.5
-    assert weight_map["near_52w_low"] == 1.0
+    assert weight_map["near_52w_low"] == 0.5
     assert weight_map["undervalued_pb"] == 1.5
 
 
