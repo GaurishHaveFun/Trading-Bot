@@ -167,4 +167,114 @@ All `Bar.timestamp` values are guaranteed UTC-aware by the time they leave `YFin
 
 ### Column Name Note
 
-`yf.download(..., multi_level_column=False)` is required to flatten multi-ticker DataFrames into single-level columns (`Open`, `High`, `Low`, `Close`, `Volume`). Without this flag, yfinance >= 0.2.x returns a MultiIndex DataFrame that requires an extra level of access.
+`yf.download(..., multi_level_index=False)` is required to flatten multi-ticker DataFrames into single-level columns (`Open`, `High`, `Low`, `Close`, `Volume`). Without this flag, yfinance >= 0.2.x returns a MultiIndex DataFrame that requires an extra level of access.
+
+---
+
+## FundamentalsCache
+
+`screener.data.fundamentals_cache.FundamentalsCache` is a thin SQLite persistence layer for computed fundamentals-quality metrics, mirroring the shape of `BarCache` but with a much simpler caching model: one row per symbol, refreshed once per UTC calendar day.
+
+### DB Schema and File Location
+
+Default path: `.cache/fundamentals.db` (relative to the working directory, typically `backend/`).
+
+The path is configurable by passing `db_path` to `FundamentalsCache.__init__`. The parent directory is created automatically if it does not exist.
+
+```sql
+CREATE TABLE IF NOT EXISTS fundamentals (
+    symbol               TEXT    NOT NULL PRIMARY KEY,
+    as_of                TEXT    NOT NULL,   -- ISO-8601, always UTC
+    years_available      INTEGER NOT NULL,
+    fcf_5y_cumulative    REAL,
+    interest_coverage    REAL,
+    gross_margin         REAL,
+    ocf_ni_ratio         REAL,
+    net_margin           REAL,
+    share_dilution_5y    REAL
+)
+```
+
+Unlike `bars`, `symbol` alone is the primary key — there is only ever one cached snapshot per ticker, since fundamentals only need refreshing daily rather than being ranged over historical windows.
+
+### API
+
+#### `FundamentalsCache(db_path: str | Path = ".cache/fundamentals.db")`
+
+Opens (or creates) the SQLite database at `db_path`. The `fundamentals` table is created on first use. The connection is kept open for the lifetime of the object; call `close()` when done.
+
+#### `get(symbol) → FundamentalsSnapshot | None`
+
+Returns the cached `FundamentalsSnapshot` for `symbol`, or `None` on a cache miss **or** if the cached row's `as_of` date does not match today's UTC date. This is the cache's TTL mechanism: a snapshot computed on a previous UTC day is treated as stale and discarded rather than returned, forcing `FundamentalsProvider` to recompute it.
+
+#### `put(symbol, snapshot) → None`
+
+Upserts the snapshot for `symbol` via `INSERT OR REPLACE`, keyed by `symbol` alone. This differs from `BarCache.put`'s `INSERT OR IGNORE` semantics — a fundamentals snapshot is meant to be replaced wholesale each day, not merged/accumulated like bar history.
+
+#### `close() → None`
+
+Closes the underlying SQLite connection.
+
+---
+
+## FundamentalsProvider
+
+`screener.data.fundamentals_provider.FundamentalsProvider` computes 6 balance-sheet-quality metrics from yfinance's annual financials, balance sheet, and cashflow statements (yfinance's free tier exposes roughly 5 annual periods). It hard-excludes weak-balance-sheet tickers before they reach the technical rule engine — see the Quality Gate section in `docs/rules.md`.
+
+### Construction
+
+```python
+provider = FundamentalsProvider(cache=FundamentalsCache())
+```
+
+`FundamentalsCache` is a mandatory dependency, same pattern as `YFinanceProvider`/`BarCache`.
+
+### Cache-First Logic
+
+`get_fundamentals(symbol)`:
+
+1. Query `FundamentalsCache.get(symbol)`.
+2. If a fresh (same-UTC-day) snapshot is cached, return it immediately.
+3. Otherwise sleep `0.2` seconds (the same polite fetch delay used by `YFinanceProvider`), log `fetching_fundamentals`, and dispatch the blocking computation via `asyncio.to_thread(self._compute, symbol)`.
+4. Write the freshly computed snapshot to the cache and return it.
+
+Per its docstring, `get_fundamentals` always returns a real `FundamentalsSnapshot` — even the insufficient-data branches below produce a snapshot with `years_available` set and every metric `None` — it never actually returns `None` itself, despite the `FundamentalsSnapshot | None` return type.
+
+### asyncio.to_thread Wrapping
+
+All yfinance access (`Ticker.financials`, `.balance_sheet`, `.cashflow`, `.info`) and metric computation happens inside `_compute`, a synchronous method dispatched via `asyncio.to_thread`. This keeps the blocking yfinance calls off the event loop, matching the pattern used by `YFinanceProvider._download`.
+
+### Insufficient-Data Short-Circuits
+
+Two early-exit branches in `_compute` return a snapshot with all 6 metrics `None` without attempting any metric computation:
+
+- **No data at all**: if `financials`, `balance_sheet`, and `cashflow` are all empty, `years_available=0` and a `fundamentals_no_data` info log is emitted.
+- **`years_available < 2`**: `years_available` is `min(fin_n, cf_n)` when both the financials and cashflow statements have at least one period, otherwise `max(fin_n, cf_n, bs_n)` (falling back to whichever statement has data so a single missing statement doesn't zero out the count). If fewer than 2 usable annual periods are available, a `fundamentals_insufficient_years` info log is emitted and the whole snapshot short-circuits with all metrics `None`.
+
+### The 6 Metrics
+
+Each metric is computed by a module-level function and wrapped in `_safe_metric`, which catches any exception, logs a `fundamentals_metric_unavailable` warning (with `symbol` and `metric`), and returns `None` — so one bad metric never aborts the others.
+
+Row lookups use `_get_row(df, names)`, which tries each label in `names` in order and returns the first match, to absorb yfinance's row-naming differences across versions:
+
+| Statement | Row | Aliases (in order) |
+|---|---|---|
+| Cashflow | Operating Cash Flow | `Operating Cash Flow`, `Total Cash From Operating Activities` |
+| Cashflow | Capital Expenditure | `Capital Expenditure` |
+| Financials | EBIT | `EBIT`, `Operating Income` |
+| Financials | Interest Expense | `Interest Expense` |
+| Financials | Gross Profit | `Gross Profit` |
+| Financials | Total Revenue | `Total Revenue` |
+| Financials | Net Income | `Net Income` |
+| Balance sheet | Shares outstanding | `Share Issued`, `Ordinary Shares Number` |
+
+| Metric | Formula | What `None` means |
+|---|---|---|
+| `fcf_5y_cumulative` | Σ (Operating Cash Flow + Capital Expenditure) across all available annual periods | Never `None` — always returns a float (`0.0` if no period has both values present). CapEx is stored negative by yfinance, so adding it already nets out the spend; the total is **summed**, not averaged, per spec. |
+| `interest_coverage` | latest-year `EBIT / \|Interest Expense\|` | **No debt.** Missing, zero, or `NaN` interest expense on the latest period is treated as "no interest expense to cover" and returns `None` directly — no exception, no warning logged. If interest expense *is* present but EBIT is missing, that raises instead (caught by `_safe_metric`, which does log a warning). |
+| `gross_margin` | average of `Gross Profit / Total Revenue` across all years with valid, non-zero revenue | No year had valid data |
+| `ocf_ni_ratio` | average of `Operating Cash Flow / Net Income` across years, **excluding any year where Net Income <= 0** from both the sum and the count | No year survived the exclusion |
+| `net_margin` | average of `Net Income / Total Revenue` across all years with valid, non-zero revenue | No year had valid data |
+| `share_dilution_5y` | `(latest shares outstanding - oldest shares outstanding) / oldest shares outstanding`, using the newest and oldest columns of the shares-outstanding row | **No usable history**, not zero dilution. Triggered by: no shares row at all (falls back to `Ticker.info["sharesOutstanding"]`, but that's latest-year-only with no baseline to diff against), fewer than 2 periods, or an invalid/zero oldest value. Every one of these paths logs a `fundamentals_metric_unavailable` warning directly (unlike `interest_coverage`'s silent "no debt" case), because it signals genuinely unavailable data rather than an expected zero. |
+
+`interest_coverage` and `share_dilution_5y` are the two metrics where `None` carries a specific "no debt" / "no data" meaning rather than "the ratio evaluated to zero." `evaluate_quality_gate` (see `docs/rules.md`) relies on this distinction — a `None` metric always skips its check rather than failing it.

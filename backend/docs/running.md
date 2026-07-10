@@ -92,7 +92,17 @@ Note: the PDF's displayed "Run timestamp" is shown in US Eastern time (`America/
 - yfinance sometimes prints `possibly delisted; no price data found` to stderr during the cache's incremental head/tail fetch (e.g. asking for a single day just outside a ticker's existing cached range). It self-corrects on the next fetch — the run still completes and produces correct data.
 - Tickers with fewer than 200 cached bars are logged as `insufficient_bars` and skipped — this is intentional (non-negotiable #5: never let a `Signal` carry NaN indicators from too little history).
 
-## 6. Tests
+## 6. GitHub Actions — daily publish to GitHub Pages
+
+`.github/workflows/screener.yml` (repo root, not `backend/`) runs the screener on a schedule and publishes the PDF report to GitHub Pages so it's viewable without cloning the repo.
+
+- **Schedule:** `cron: "0 21 * * *"` — 21:00 UTC daily. The workflow comment notes GitHub cron is UTC-only (no DST awareness), so this is 4pm EST / 5pm EDT and drifts an hour across the year; the comment flags `"0 20 * * *"` as the summer-accurate 4pm ET alternative if that ever matters.
+- **What it invokes:** after `uv sync` (`backend/`, Python 3.12 via `astral-sh/setup-uv@v4`), the default (no-input) path runs `uv run python -m screener.main --once`, copies the newest `output/reports/report_[0-9]*.pdf` to `site/daily.pdf`, and writes a small `site/index.html` wrapper (dark-themed, embeds the PDF in an `<iframe>` plus a direct download link) with the run's UTC timestamp in the page.
+- **Manual trigger (`workflow_dispatch`):** supports one input, `ticker` — optional, string, default `""`. Leave it blank to run the full daily screen. If set (e.g. `AAPL`), the workflow uppercases it and runs `uv run python -m screener.main --ticker "$TICKER"` instead, then copies the resulting `output/reports/report_<TICKER>_*.pdf` to `site/ticker.pdf` and writes `site/ticker.html` (same style, labeled "Single-ticker report — manual run, not the daily screen").
+- **Publishing:** the `Publish to GitHub Pages` step uses `peaceiris/actions-gh-pages@v4` with `publish_dir: ./site` and `keep_files: true` (so a manual single-ticker run doesn't wipe out the last daily `index.html`/`daily.pdf`, and vice versa), authenticated via the built-in `secrets.GITHUB_TOKEN`.
+- **Concurrency:** the job runs under `concurrency: { group: screener-pages, cancel-in-progress: false }`, so overlapping runs (e.g. a manual trigger while the daily cron is still running) queue instead of cancelling each other.
+
+## 7. Tests
 
 ```bash
 uv run pytest                      # everything, including live-network integration tests

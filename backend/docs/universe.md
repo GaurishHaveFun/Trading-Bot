@@ -6,13 +6,14 @@ The `screener.universe` package defines which ticker symbols the screener proces
 
 **File:** `src/screener/universe/base.py`
 
-`UniverseProvider` is an abstract base class with a single required method:
+`UniverseProvider` is an abstract base class with one required method and one optional hook:
 
 ```python
-def get_symbols(self) -> list[str]: ...
+def get_symbols(self) -> list[str]: ...      # abstract, required
+def get_quotes(self) -> dict[str, dict]: ...  # optional, default returns {}
 ```
 
-Any class that inherits from `UniverseProvider` and implements `get_symbols` is a valid provider. Callers (e.g., `main.py`) only depend on this interface, making it straightforward to swap data sources.
+Any class that inherits from `UniverseProvider` and implements `get_symbols` is a valid provider. `get_quotes` is not abstract — the base implementation just returns an empty dict, so providers with no per-symbol metadata (`StaticUniverse`, `SP500Universe`) don't need to override it. Providers that do have metadata (`LosersUniverse`) override it to return per-symbol data such as `price_to_book`, `change_pct`, and `market_cap`, keyed by ticker symbol. Callers (e.g., `main.py`) call both `universe.get_symbols()` and `universe.get_quotes()` and only depend on this interface, making it straightforward to swap data sources.
 
 ## StaticUniverse
 
@@ -64,6 +65,40 @@ Fetches the full S&P 500 constituent list by scraping the Wikipedia page [List o
 ### Dot-to-dash symbol fix
 
 Wikipedia uses periods in some symbols (e.g., `BRK.B`), but yfinance expects dashes (e.g., `BRK-B`). The `_fetch` method replaces every `.` with `-` in the `Symbol` column before returning or caching the list.
+
+## LosersUniverse
+
+**File:** `src/screener/universe/losers.py`
+
+Screens yfinance's `day_losers` predefined query for today's biggest large-cap decliners, unioned with any watchlist symbols that are also down today. **This is the default universe provider** — `Settings.universe` defaults to `"losers"` (`config.py`), and `main.py`'s `_build_universe` returns `LosersUniverse` whenever that setting is `"losers"`.
+
+### Constructor
+
+```python
+def __init__(self, watchlist: set[str] | None = None) -> None: ...
+```
+
+Takes an optional `watchlist` set of ticker symbols (loaded from `config/watchlist.yaml` via `load_watchlist`). `main.py` always passes the loaded watchlist in when constructing `LosersUniverse`.
+
+### How get_symbols() works
+
+Calls `yf.screen("day_losers", count=50)`, drops any quote that isn't `quoteType == "EQUITY"` or has `marketCap` under $10B, sorts the remainder by `regularMarketChangePercent` ascending (biggest loss first), and keeps the top 15.
+
+It then checks every watchlist symbol's current quote and keeps only the ones with a negative `regularMarketChangePercent` today. These watchlist "losers" are unioned into the top-15 result using `dict.setdefault`, so a watchlist symbol already present in the top 15 keeps its original (screen-sourced) metadata rather than being overwritten.
+
+Quote metadata for the combined set is stashed on the instance for `get_quotes()`, and `get_symbols()` returns the union's ticker symbols sorted alphabetically.
+
+### How get_quotes() works
+
+Returns a copy of the metadata dict populated by the most recent `get_symbols()` call: `{symbol: {"price_to_book", "change_pct", "market_cap", "industry", "sector"}}`. Values are read straight off the yfinance quote dict (`priceToBook`, `regularMarketChangePercent`, `marketCap`, `industry`/`industryKey`, `sector`) and may be `None` if yfinance didn't supply them.
+
+### quote_for(symbol)
+
+Not part of the `UniverseProvider` interface. Fetches and shapes quote metadata for a single arbitrary symbol via `yf.Ticker(symbol).info`. Used by `--ticker` debug mode (`run_ticker_debug` in `main.py`) to get metadata for a ticker that may fall outside the current day's losers screen.
+
+### Error handling
+
+The `day_losers` screen call and individual `yf.Ticker(...).info` lookups are each wrapped in `try/except Exception`; failures are logged as warnings (`losers_screen_error`, `watchlist_quote_error`) and treated as empty/`None` rather than raised.
 
 ## Adding a New Provider
 

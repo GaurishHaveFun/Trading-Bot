@@ -10,11 +10,11 @@ This design is intentional: the rule engine (`screener.rules`) needs one number 
 
 - The rule engine evaluates each rule against the most recent bar for a given ticker.
 - Returning a scalar keeps rule expressions simple and readable (e.g., `close > sma(200)`).
-- The 250-bar minimum enforced upstream (see `data/`) guarantees that all indicators have enough history to produce a valid (non-NaN) result when called with their standard periods.
+- The 200-bar minimum enforced upstream (see `data/` and `main.py`'s `_MIN_BARS = 200`) guarantees that all indicators have enough history to produce a valid (non-NaN) result when called with their standard periods.
 
 ## NaN Guarantee
 
-All functions assume the caller has already enforced the 250-bar minimum (the project non-negotiable). With 250 bars:
+All functions assume the caller has already enforced the 200-bar minimum (`_MIN_BARS = 200` in `main.py`, the project non-negotiable). With 200 bars:
 
 | Indicator | Period | Warm-up bars needed |
 |-----------|--------|---------------------|
@@ -24,8 +24,10 @@ All functions assume the caller has already enforced the 250-bar minimum (the pr
 | RSI       | 14     | 15 (needs 1 diff)   |
 | ATR       | 14     | 14                  |
 | SMA Volume| 20     | 20                  |
+| Low 52w   | 252    | 1 (`min_periods=1`) |
+| High 52w  | 252    | 1 (`min_periods=1`) |
 
-250 bars covers all cases. If a caller passes fewer rows, the return value may be `NaN` — that would be a caller bug, not a library bug.
+200 bars covers all cases — SMA(200) is the tightest constraint, needing exactly 200, which is why `_MIN_BARS` is set to 200. If a caller passes fewer rows, the return value may be `NaN` — that would be a caller bug, not a library bug.
 
 ## Functions
 
@@ -37,7 +39,7 @@ Wraps: `pandas_ta.sma(close, length=period)`
 
 **Parameter:** `period` — integer lookback window (e.g., 50, 200).
 
-**Used in rules:** `above_long_trend` (SMA 200), `golden_cross_state` (SMA 50 and SMA 200).
+**Used in rules:** `quality_uptrend` (`close > sma(200)`).
 
 ---
 
@@ -59,7 +61,7 @@ Wraps: `pandas_ta.rsi(close, length=period)`
 
 **Parameter:** `period` — integer lookback window (standard: 14).
 
-**Used in rules:** `oversold_rsi` (RSI 14 < 35).
+**Used in rules:** `oversold_band` (`rsi(14) > 25 and rsi(14) < 40`).
 
 ---
 
@@ -71,7 +73,7 @@ Wraps: `pandas_ta.atr(high, low, close, length=period)`
 
 **Parameter:** `period` — integer lookback window (standard: 14).
 
-**Used in rules:** `reasonable_volatility` (ATR 14 / close < 0.05).
+**Used in rules:** none currently — no rule in `config/rules.yaml` calls `atr()`.
 
 ---
 
@@ -83,7 +85,31 @@ Wraps: `pandas_ta.sma(volume, length=period)`
 
 **Parameter:** `period` — integer lookback window (e.g., 20).
 
-**Used in rules:** `volume_spike` (volume > SMA volume 20 * 1.5).
+**Used in rules:** none currently — no rule in `config/rules.yaml` calls `sma_volume()`.
+
+---
+
+### `low_52w(df, period=252) -> float`
+
+Rolling low over `period` bars (default ~52 weeks of trading days), latest scalar. Uses `low.rolling(window=period, min_periods=1).min()`.
+
+Uses `min_periods=1` so tickers with less than `period` bars of history still return a real value (their all-time low) instead of `NaN`.
+
+**Parameter:** `period` — integer lookback window (default: 252).
+
+**Used in rules:** `near_52w_low` (`close <= low_52w(252) * 1.15`).
+
+---
+
+### `high_52w(df, period=252) -> float`
+
+Rolling high over `period` bars (default ~52 weeks of trading days), latest scalar. Uses `high.rolling(window=period, min_periods=1).max()`.
+
+Uses `min_periods=1` so tickers with less than `period` bars of history still return a real value (their all-time high) instead of `NaN`.
+
+**Parameter:** `period` — integer lookback window (default: 252).
+
+**Used in rules:** none currently — no rule in `config/rules.yaml` calls `high_52w()`.
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Phase 1 of a multi-phase trading bot. A Python batch/scheduled service that: pulls daily OHLCV bars for a universe of stocks → computes technical indicators → evaluates weighted rules via a safe expression engine → emits a locked JSON output file. Runs via `--once` (single run), `--ticker AAPL` (debug single ticker), or bare (cron scheduler).
+Phase 1 of a multi-phase trading bot. A Python batch/scheduled service that: pulls daily OHLCV bars for a universe of stocks → computes technical indicators → filters out tickers that fail a fundamentals-based quality gate → evaluates weighted rules via a safe expression engine → emits a locked JSON output file plus a human-readable PDF report. Runs via `--once` (single run), `--ticker AAPL` (debug single ticker), `--backtest` (historical backtest of the current rules), or bare (cron scheduler).
 
 ## Layout
 
@@ -17,18 +17,22 @@ trading-bot/
     ├── .python-version       # 3.12
     ├── .env.example
     ├── config/
-    │   ├── rules.yaml        # cron schedule + 5 weighted rules
-    │   └── universe.yaml     # 10 ticker symbols
+    │   ├── rules.yaml            # cron schedule + 5 weighted rules
+    │   ├── universe.yaml         # 10 ticker symbols (static fallback universe)
+    │   ├── watchlist.yaml        # 16 ticker big-tech/chip watchlist
+    │   └── quality_screen.yaml   # fundamentals quality-gate thresholds
     ├── docs/                 # one .md per module (written by Sonnet subagents after each module is built)
     ├── src/screener/
     │   ├── main.py           # orchestration + CLI only
     │   ├── config.py         # pydantic-settings
     │   ├── models.py         # all Pydantic data models
-    │   ├── universe/         # UniverseProvider base + StaticUniverse + SP500Universe
-    │   ├── data/             # DataProvider base + BarCache (SQLite) + YFinanceProvider
-    │   ├── indicators/       # library.py: sma, ema, rsi, atr, sma_volume
-    │   ├── rules/            # engine.py + functions.py (asteval-powered)
-    │   ├── output/           # json_writer.py
+    │   ├── scheduler.py      # APScheduler cron loop
+    │   ├── universe/         # UniverseProvider base + StaticUniverse + LosersUniverse + SP500Universe
+    │   ├── data/             # DataProvider base + BarCache/FundamentalsCache (SQLite) + YFinanceProvider + FundamentalsProvider
+    │   ├── indicators/       # library.py: sma, ema, rsi, atr, sma_volume, low_52w, high_52w
+    │   ├── rules/            # engine.py + functions.py + quality_gate.py (asteval-powered)
+    │   ├── output/           # json_writer.py + pdf_writer.py
+    │   ├── backtest/         # engine.py: historical backtest of current rules over the watchlist
     │   └── utils/            # logging.py (structlog JSON)
     └── tests/
         ├── fixtures/         # aapl_sample.csv
@@ -49,6 +53,7 @@ No frontend this phase — web dashboard is out-of-scope for Phase 1 and will be
 - pandas-ta (technical indicators)
 - asteval (safe rule expression evaluation — NEVER use `eval`)
 - APScheduler (cron scheduling)
+- reportlab (PDF report generation)
 - structlog (JSON logging)
 - pytest (tests)
 
@@ -79,9 +84,9 @@ Future API keys (stubbed in .env.example): `FINNHUB_API_KEY`, `ALPACA_KEY`, `ALP
       "score": 0.85,
       "rules_passed": 4,
       "rules_total": 5,
-      "snapshot": {"close": 192.31, "volume": 54000000, "rsi_14": 31.2, "sma_50": 188.4, "sma_200": 175.1, "atr_14": 4.2},
+      "snapshot": {"close": 192.31, "volume": 54000000, "rsi_14": 31.2, "sma_50": 188.4, "sma_200": 175.1, "atr_14": 4.2, "price_to_book": 3.1, "change_pct": -1.85, "in_watchlist": true, "industry": "Consumer Electronics", "is_chip": false},
       "rule_results": [
-        {"rule_name": "oversold_rsi", "passed": true, "weight": 2.0, "detail": {"rsi_14": 31.2, "threshold": 35}}
+        {"rule_name": "oversold_band", "passed": true, "weight": 2.0, "detail": {"close": 192.31, "volume": 54000000, "in_watchlist": true, "is_chip": false, "price_to_book": 3.1, "rsi_14": 31.2}}
       ]
     }
   ]
@@ -92,11 +97,11 @@ Future API keys (stubbed in .env.example): `FINNHUB_API_KEY`, `ALPACA_KEY`, `ALP
 
 | Name | Weight | Condition |
 |------|--------|-----------|
-| oversold_rsi | 2.0 | `rsi(14) < 35` |
-| above_long_trend | 1.5 | `close > sma(200)` |
-| golden_cross_state | 1.5 | `sma(50) > sma(200)` |
-| volume_spike | 1.0 | `volume > sma_volume(20) * 1.5` |
-| reasonable_volatility | 1.0 | `atr(14) / close < 0.05` |
+| big_tech_or_chip | 2.0 | `in_watchlist or is_chip` |
+| oversold_band | 2.0 | `rsi(14) > 25 and rsi(14) < 40` |
+| quality_uptrend | 1.5 | `close > sma(200)` |
+| near_52w_low | 1.0 | `close <= low_52w(252) * 1.15` |
+| undervalued_pb | 1.5 | `price_to_book < 4` |
 
 ## Development Workflow
 
@@ -108,8 +113,9 @@ Future API keys (stubbed in .env.example): `FINNHUB_API_KEY`, `ALPACA_KEY`, `ALP
 
 ```bash
 cd backend
-uv run python -m screener.main --once        # single run, writes output/runs/run_<UTC>.json
-uv run python -m screener.main --ticker AAPL # debug: verbose per-rule breakdown
+uv run python -m screener.main --once        # single run, writes output/runs/run_<UTC>.json + output/reports/report_<UTC>.pdf
+uv run python -m screener.main --ticker AAPL # debug: verbose per-rule breakdown + output/reports/report_AAPL_<UTC>.pdf
+uv run python -m screener.main --backtest    # historical backtest (--days, default 30; --hold, default 5), writes output/reports/backtest_<UTC>.pdf
 uv run python -m screener.main               # start cron scheduler
 uv run pytest                                # run all unit tests
 uv run pytest -m "not integration"           # skip network tests
@@ -118,6 +124,7 @@ uv run pytest -m "not integration"           # skip network tests
 ## Definition of Done (Phase 1)
 
 - `uv run pytest` passes (all non-integration tests).
-- `uv run python -m screener.main --once` produces valid JSON in `output/runs/` in under 60 seconds.
-- `--ticker AAPL` prints a readable per-rule breakdown to the console.
+- `uv run python -m screener.main --once` produces valid JSON in `output/runs/` and a PDF report in `output/reports/` in under 60 seconds.
+- `--ticker AAPL` prints a readable per-rule breakdown to the console and writes a per-ticker PDF report.
+- Tickers that fail the fundamentals-based quality gate are excluded from scoring before rules run.
 - No NaN values in any Signal, all timestamps UTC, JSON logs only.
