@@ -7,11 +7,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from screener.backtest import run_backtest
-from screener.config import get_settings, load_rules_config, load_watchlist
-from screener.data import BarCache, YFinanceProvider
-from screener.models import Bar, BacktestResult, RuleResult, ScreenerRun, Signal
+from screener.config import get_settings, load_quality_screen_config, load_rules_config, load_watchlist
+from screener.data import BarCache, FundamentalsCache, FundamentalsProvider, YFinanceProvider
+from screener.models import Bar, BacktestResult, FundamentalsSnapshot, RuleResult, ScreenerRun, Signal
 from screener.output import write_backtest_report, write_report, write_run, write_ticker_report
-from screener.rules import RuleEngine
+from screener.rules import RuleEngine, evaluate_quality_gate
 from screener.universe import LosersUniverse, StaticUniverse, UniverseProvider
 from screener.utils.logging import configure_logging, get_logger
 
@@ -19,7 +19,9 @@ logger = get_logger(__name__)
 
 _RULES_PATH = Path("config/rules.yaml")
 _UNIVERSE_PATH = Path("config/universe.yaml")
+_QUALITY_SCREEN_PATH = Path("config/quality_screen.yaml")
 _CACHE_PATH = Path(".cache/bars.db")
+_FUNDAMENTALS_CACHE_PATH = Path(".cache/fundamentals.db")
 _MIN_BARS = 200
 _LOOKBACK_DAYS = 375  # ~250 trading days
 _CONCURRENCY = 10
@@ -39,6 +41,7 @@ async def run_screener() -> ScreenerRun:
     configure_logging(settings.log_level)
 
     rules_config = load_rules_config(_RULES_PATH)
+    quality_screen_config = load_quality_screen_config(_QUALITY_SCREEN_PATH)
     watchlist = load_watchlist(settings.watchlist_path)
     universe = _build_universe(settings.universe, watchlist)
     symbols = universe.get_symbols()
@@ -46,6 +49,8 @@ async def run_screener() -> ScreenerRun:
 
     cache = BarCache(_CACHE_PATH)
     provider = YFinanceProvider(cache)
+    fundamentals_cache = FundamentalsCache(_FUNDAMENTALS_CACHE_PATH)
+    fundamentals_provider = FundamentalsProvider(fundamentals_cache)
     engine = RuleEngine(rules_config.rules)
 
     end = datetime.now(timezone.utc)
@@ -55,23 +60,32 @@ async def run_screener() -> ScreenerRun:
 
     sem = asyncio.Semaphore(_CONCURRENCY)
 
-    async def fetch_one(symbol: str) -> tuple[str, list[Bar]]:
+    async def fetch_one(symbol: str) -> tuple[str, list[Bar], FundamentalsSnapshot | None]:
         async with sem:
-            bars = await provider.get_bars(symbol, start, end)
-            return symbol, bars
+            bars, funda_snapshot = await asyncio.gather(
+                provider.get_bars(symbol, start, end),
+                fundamentals_provider.get_fundamentals(symbol),
+            )
+            return symbol, bars, funda_snapshot
 
     results = await asyncio.gather(*[fetch_one(s) for s in symbols], return_exceptions=True)
 
     signals: list[Signal] = []
     run_ts = datetime.now(timezone.utc)
+    quality_gate_excluded = 0
 
     for item in results:
         if isinstance(item, Exception):
             logger.warning("fetch_error", error=str(item))
             continue
-        symbol, bars = item
+        symbol, bars, funda_snapshot = item
         if len(bars) < _MIN_BARS:
             logger.warning("insufficient_bars", symbol=symbol, count=len(bars))
+            continue
+
+        gate_result = evaluate_quality_gate(funda_snapshot, quality_screen_config)
+        if not gate_result.passed:
+            quality_gate_excluded += 1
             continue
 
         meta = quotes.get(symbol)
@@ -114,12 +128,14 @@ async def run_screener() -> ScreenerRun:
         total_symbols=len(symbols),
         signals_evaluated=len(signals),
         above_threshold=len(above),
+        quality_gate_excluded=quality_gate_excluded,
         top5=[f"{s.ticker}={s.score:.2f}" for s in top5],
         output=str(path),
         report=str(report_path),
     )
 
     cache.close()
+    fundamentals_cache.close()
     return run
 
 
@@ -194,18 +210,36 @@ async def run_ticker_debug(symbol: str) -> None:
     configure_logging(settings.log_level)
 
     rules_config = load_rules_config(_RULES_PATH)
+    quality_screen_config = load_quality_screen_config(_QUALITY_SCREEN_PATH)
     watchlist = load_watchlist(settings.watchlist_path)
     cache = BarCache(_CACHE_PATH)
     provider = YFinanceProvider(cache)
+    fundamentals_cache = FundamentalsCache(_FUNDAMENTALS_CACHE_PATH)
+    fundamentals_provider = FundamentalsProvider(fundamentals_cache)
     engine = RuleEngine(rules_config.rules)
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=_LOOKBACK_DAYS)
 
-    bars = await provider.get_bars(symbol, start, end)
+    bars, funda_snapshot = await asyncio.gather(
+        provider.get_bars(symbol, start, end),
+        fundamentals_provider.get_fundamentals(symbol),
+    )
     if len(bars) < _MIN_BARS:
         print(f"[WARN] Only {len(bars)} bars for {symbol} — need at least {_MIN_BARS}")
         cache.close()
+        fundamentals_cache.close()
+        return
+
+    gate_result = evaluate_quality_gate(funda_snapshot, quality_screen_config)
+    if not gate_result.passed:
+        print(
+            f"[WARN] {symbol} excluded by quality gate — failed metrics: "
+            f"{gate_result.failed_metrics}"
+        )
+        print(f"  Detail: {gate_result.detail}")
+        cache.close()
+        fundamentals_cache.close()
         return
 
     meta = LosersUniverse(watchlist=watchlist).quote_for(symbol)
@@ -233,6 +267,7 @@ async def run_ticker_debug(symbol: str) -> None:
     )
     print(f"[PDF] Report written to {report_path}")
     cache.close()
+    fundamentals_cache.close()
 
 
 async def run_backtest_cli(days: int, holding_days: int) -> None:

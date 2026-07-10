@@ -1,0 +1,6 @@
+min_fcf_5y_cumulative: 0.0       # exclude if fcf_5y_cumulative < this
+min_interest_coverage: 2.0       # exclude if interest_coverage < this (None = no debt = skip check)
+min_gross_margin: 0.15           # exclude if gross_margin < this
+min_ocf_ni_ratio: 0.7            # exclude if ocf_ni_ratio < this
+min_net_margin: 0.05             # exclude if net_margin < this
+max_share_dilution_5y: 0.20      # exclude if share_dilution_5y > this

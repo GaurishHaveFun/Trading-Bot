@@ -41,11 +41,27 @@ class RulesConfig(BaseModel):
     rules: list[RuleConfig]
 
 
+class QualityScreenConfig(BaseModel):
+    min_fcf_5y_cumulative: float = 0.0
+    min_interest_coverage: float = 2.0
+    min_gross_margin: float = 0.15
+    min_ocf_ni_ratio: float = 0.7
+    min_net_margin: float = 0.05
+    max_share_dilution_5y: float = 0.20
+
+
 def load_rules_config(path: str | Path) -> RulesConfig:
     """Parse rules.yaml into a RulesConfig model."""
     with open(path, "r") as f:
         data = yaml.safe_load(f)
     return RulesConfig.model_validate(data)
+
+
+def load_quality_screen_config(path: str | Path) -> QualityScreenConfig:
+    """Parse quality_screen.yaml into a QualityScreenConfig model."""
+    with open(path, "r") as f:
+        data = yaml.safe_load(f)
+    return QualityScreenConfig.model_validate(data)
 
 
 def load_watchlist(path: str | Path) -> set[str]:

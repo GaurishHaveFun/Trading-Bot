@@ -3,10 +3,18 @@ from pathlib import Path
 
 import pytest
 
-from screener.config import RuleConfig, RulesConfig, load_rules_config, load_watchlist
+from screener.config import (
+    QualityScreenConfig,
+    RuleConfig,
+    RulesConfig,
+    load_quality_screen_config,
+    load_rules_config,
+    load_watchlist,
+)
 
 RULES_YAML = Path(__file__).parent.parent / "config" / "rules.yaml"
 WATCHLIST_YAML = Path(__file__).parent.parent / "config" / "watchlist.yaml"
+QUALITY_SCREEN_YAML = Path(__file__).parent.parent / "config" / "quality_screen.yaml"
 
 
 def test_load_rules_config_parses_five_rules():
@@ -83,3 +91,16 @@ def test_settings_default_watchlist_path():
     from screener.config import Settings
     settings = Settings(_env_file=None)
     assert settings.watchlist_path == "config/watchlist.yaml"
+
+
+# --- quality screen config ---
+
+def test_load_quality_screen_config_parses():
+    config = load_quality_screen_config(QUALITY_SCREEN_YAML)
+    assert isinstance(config, QualityScreenConfig)
+    assert config.min_fcf_5y_cumulative == 0.0
+    assert config.min_interest_coverage == 2.0
+    assert config.min_gross_margin == 0.15
+    assert config.min_ocf_ni_ratio == 0.7
+    assert config.min_net_margin == 0.05
+    assert config.max_share_dilution_5y == 0.20

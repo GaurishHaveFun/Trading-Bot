@@ -75,6 +75,44 @@ class ScreenerRun(BaseModel):
         return v.astimezone(timezone.utc)
 
 
+class FundamentalsSnapshot(BaseModel):
+    """Point-in-time snapshot of balance-sheet-quality metrics for a ticker.
+
+    Used to hard-exclude weak-balance-sheet tickers before they reach the
+    technical rule engine. Any metric that could not be computed (missing
+    row, insufficient history, etc.) is `None` rather than NaN."""
+
+    ticker: str
+    as_of: datetime
+    years_available: int
+    fcf_5y_cumulative: float | None
+    interest_coverage: float | None
+    gross_margin: float | None
+    ocf_ni_ratio: float | None
+    net_margin: float | None
+    share_dilution_5y: float | None
+
+    @field_validator("as_of")
+    @classmethod
+    def must_be_utc(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v.astimezone(timezone.utc)
+
+
+class QualityGateResult(BaseModel):
+    """Internal filtering type produced by the fundamentals quality gate.
+
+    NOT part of the locked ScreenerRun/Signal JSON output schema documented
+    in CLAUDE.md — must never be added to Signal or ScreenerRun. Exclusions
+    surface only via structlog, never via the output schema."""
+
+    ticker: str
+    passed: bool
+    failed_metrics: list[str] = []
+    detail: dict[str, Any] = {}
+
+
 class BacktestTrade(BaseModel):
     """A single simulated trade from the historical backtest: buy at the
     signal day's close, sell `holding_days` trading days later."""
