@@ -28,6 +28,7 @@ class RuleConfig(BaseModel):
     name: str
     weight: float
     condition: str
+    description: str = ""
 
 
 class ScheduleConfig(BaseModel):

@@ -102,7 +102,9 @@ async def run_screener() -> ScreenerRun:
     )
 
     path = write_run(run)
-    report_path = write_report(run)
+    report_path = write_report(
+        run, rule_descriptions={r.name: r.description for r in rules_config.rules}
+    )
 
     above = [s for s in signals if s.score >= settings.alert_threshold]
     top5 = signals[:5]
@@ -223,7 +225,12 @@ async def run_ticker_debug(symbol: str) -> None:
     )
 
     _print_ticker_breakdown(symbol, signal)
-    report_path = write_ticker_report(signal, settings.alert_threshold, settings.universe)
+    report_path = write_ticker_report(
+        signal,
+        settings.alert_threshold,
+        settings.universe,
+        rule_descriptions={r.name: r.description for r in rules_config.rules},
+    )
     print(f"[PDF] Report written to {report_path}")
     cache.close()
 

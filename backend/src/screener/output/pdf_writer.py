@@ -43,8 +43,24 @@ _TRADE_HEADER = [
     "Sell Date", "Sell Close", "Return %", "Result",
 ]
 
+_GLOSSARY = [
+    ("Score", "The percentage of rules a stock passed, weighted by how important each rule is. Higher = more of our criteria line up."),
+    ("Rules passed", "How many of the individual checks (out of the total) this stock met."),
+    ("Close", "The stock's most recent closing price."),
+    ("Volume", "How many shares traded — a rough gauge of investor interest/activity."),
+    ("Change %", "How much the price moved versus the previous close."),
+    ("RSI-14", "Relative Strength Index over 14 days — a 0-100 gauge of momentum. Below ~30-35 often signals 'oversold' (potentially cheap); above ~70 often signals 'overbought'."),
+    ("SMA-50 / SMA-200", "The average closing price over the last 50 / 200 trading days — smoothed trend lines. Price above these lines generally signals an uptrend."),
+    ("ATR-14", "Average True Range over 14 days — a measure of how much the price typically swings day to day (volatility)."),
+    ("P/B (Price-to-Book)", "The stock's price divided by the company's book (accounting) value. Lower can mean the stock is cheap relative to its underlying assets."),
+]
 
-def write_report(run: ScreenerRun, output_dir: Path = _OUTPUT_DIR) -> Path:
+
+def write_report(
+    run: ScreenerRun,
+    output_dir: Path = _OUTPUT_DIR,
+    rule_descriptions: dict[str, str] | None = None,
+) -> Path:
     """Write a full multi-ticker PDF report.
 
     Writes output/reports/report_<UTC_ISO>.pdf (same timestamp convention as
@@ -57,10 +73,13 @@ def write_report(run: ScreenerRun, output_dir: Path = _OUTPUT_DIR) -> Path:
     story: list = []
     story.extend(_header_block(run))
     story.append(Spacer(1, 0.2 * inch))
+    if rule_descriptions:
+        story.extend(_how_to_read_block(rule_descriptions))
+        story.append(Spacer(1, 0.2 * inch))
     story.extend(_summary_table(run.signals, run.alert_threshold))
     story.append(Spacer(1, 0.3 * inch))
     for signal in run.signals:
-        story.extend(_ticker_section(signal, run.alert_threshold))
+        story.extend(_ticker_section(signal, run.alert_threshold, rule_descriptions=rule_descriptions))
         story.append(Spacer(1, 0.2 * inch))
 
     _build_doc(path, story)
@@ -74,6 +93,7 @@ def write_ticker_report(
     alert_threshold: float,
     universe: str,
     output_dir: Path = _OUTPUT_DIR,
+    rule_descriptions: dict[str, str] | None = None,
 ) -> Path:
     """Write a single-ticker PDF report for --ticker debug mode.
 
@@ -98,7 +118,10 @@ def write_ticker_report(
     story: list = []
     story.extend(_header_block(wrapper_run))
     story.append(Spacer(1, 0.2 * inch))
-    story.extend(_ticker_section(signal, alert_threshold))
+    if rule_descriptions:
+        story.extend(_how_to_read_block(rule_descriptions))
+        story.append(Spacer(1, 0.2 * inch))
+    story.extend(_ticker_section(signal, alert_threshold, rule_descriptions=rule_descriptions))
 
     _build_doc(path, story)
 
@@ -267,6 +290,47 @@ def _header_block(run: ScreenerRun) -> list:
     return lines
 
 
+def _how_to_read_block(rule_descriptions: dict[str, str]) -> list:
+    """Plain-English glossary + per-rule explanation block, shown once near
+    the top of the report so non-technical readers have a key before the
+    numeric tables start."""
+    story: list = [Paragraph("How to Read This Report", _HEADING_STYLE), Spacer(1, 0.05 * inch)]
+    for term, definition in _GLOSSARY:
+        story.append(Paragraph(f"<b>{term}:</b> {definition}", _SMALL_STYLE))
+    story.append(Spacer(1, 0.1 * inch))
+    story.append(Paragraph("What each check means", _HEADING_STYLE))
+    story.append(Spacer(1, 0.05 * inch))
+    for name, description in rule_descriptions.items():
+        humanized = name.replace("_", " ").title()
+        text = f"<b>{humanized}:</b> {description}" if description else f"<b>{humanized}</b>"
+        story.append(Paragraph(text, _SMALL_STYLE))
+    return story
+
+
+def _plain_english_takeaway(signal: Signal, alert_threshold: float, rule_descriptions: dict[str, str]) -> list:
+    """Short human-readable summary for a single ticker: overall verdict
+    plus which checks it met/missed, in plain language above the numeric
+    rule breakdown table."""
+    if signal.score >= alert_threshold:
+        verdict = "Strong match"
+    elif signal.score >= 0.5:
+        verdict = "Partial match"
+    else:
+        verdict = "Weak match"
+
+    headline = (
+        f"<b>{verdict}</b> — cleared {signal.rules_passed} of {signal.rules_total} checks."
+    )
+    story: list = [Paragraph(headline, _NORMAL_STYLE)]
+
+    met = [r.rule_name.replace("_", " ").title() for r in signal.rule_results if r.passed]
+    missed = [r.rule_name.replace("_", " ").title() for r in signal.rule_results if not r.passed]
+
+    story.append(Paragraph(f"<b>✓ Met:</b> {', '.join(met) if met else 'None'}", _SMALL_STYLE))
+    story.append(Paragraph(f"<b>✗ Missed:</b> {', '.join(missed) if missed else 'None'}", _SMALL_STYLE))
+    return story
+
+
 def _summary_table(signals: list[Signal], alert_threshold: float) -> list:
     """Ranked summary table of all signals, sorted as given (already
     score-descending from main.py:run_screener)."""
@@ -312,7 +376,11 @@ def _summary_table(signals: list[Signal], alert_threshold: float) -> list:
     return [Paragraph("Ranked Summary", _HEADING_STYLE), Spacer(1, 0.1 * inch), table]
 
 
-def _ticker_section(signal: Signal, alert_threshold: float) -> list:
+def _ticker_section(
+    signal: Signal,
+    alert_threshold: float,
+    rule_descriptions: dict[str, str] | None = None,
+) -> list:
     """Per-ticker heading, snapshot line, and full rule breakdown table."""
     passed = "PASS" if signal.score >= alert_threshold else ""
     heading = (
@@ -335,6 +403,9 @@ def _ticker_section(signal: Signal, alert_threshold: float) -> list:
     ]
     story.append(Paragraph("  |  ".join(snapshot_bits), _SMALL_STYLE))
     story.append(Spacer(1, 0.05 * inch))
+    if rule_descriptions:
+        story.extend(_plain_english_takeaway(signal, alert_threshold, rule_descriptions))
+        story.append(Spacer(1, 0.05 * inch))
     story.append(_rule_table(signal.rule_results))
     return story
 

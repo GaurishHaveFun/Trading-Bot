@@ -11,6 +11,8 @@ from screener.output.pdf_writer import (
     _fmt_pb,
     _fmt_pct,
     _fmt_vol,
+    _how_to_read_block,
+    _plain_english_takeaway,
     write_report,
     write_ticker_report,
 )
@@ -123,3 +125,77 @@ def test_fmt_vol_humanizes_thousands_and_billions():
     assert _fmt_vol(1_500) == "1.50K"
     assert _fmt_vol(2_000_000_000) == "2.00B"
     assert _fmt_vol(500) == "500"
+
+
+# --- plain-English additions (rule_descriptions) ---
+
+_RULE_DESCRIPTIONS = {
+    "oversold_rsi": "The stock has fallen enough recently to look potentially cheap.",
+    "above_long_trend": "Trading above its long-term average price.",
+}
+
+
+def test_write_report_with_rule_descriptions_creates_pdf(tmp_path):
+    run = _make_run()
+    path = write_report(run, output_dir=tmp_path, rule_descriptions=_RULE_DESCRIPTIONS)
+    assert path.exists()
+    assert path.stat().st_size > 0
+    with open(path, "rb") as f:
+        assert f.read(4) == b"%PDF"
+
+
+def test_write_ticker_report_with_rule_descriptions_creates_pdf(tmp_path):
+    signal = _make_signal("NVDA", score=0.72)
+    path = write_ticker_report(
+        signal,
+        alert_threshold=0.70,
+        universe="static",
+        output_dir=tmp_path,
+        rule_descriptions=_RULE_DESCRIPTIONS,
+    )
+    assert path.exists()
+    assert path.stat().st_size > 0
+    with open(path, "rb") as f:
+        assert f.read(4) == b"%PDF"
+
+
+def test_how_to_read_block_returns_nonempty_flowables():
+    block = _how_to_read_block(_RULE_DESCRIPTIONS)
+    assert isinstance(block, list)
+    assert len(block) > 0
+
+
+def test_how_to_read_block_handles_missing_description():
+    block = _how_to_read_block({"some_rule": ""})
+    assert isinstance(block, list)
+    assert len(block) > 0
+
+
+def test_plain_english_takeaway_returns_nonempty_flowables():
+    signal = _make_signal("AAPL", score=0.85)
+    block = _plain_english_takeaway(signal, 0.7, _RULE_DESCRIPTIONS)
+    assert isinstance(block, list)
+    assert len(block) > 0
+
+
+def test_plain_english_takeaway_all_passed_and_all_failed():
+    all_passed = Signal(
+        ticker="AAA",
+        timestamp=datetime(2024, 1, 15, 20, 0, 0, tzinfo=timezone.utc),
+        score=1.0,
+        rules_passed=1,
+        rules_total=1,
+        rule_results=[RuleResult(rule_name="oversold_rsi", passed=True, weight=2.0, detail={})],
+        snapshot={},
+    )
+    all_failed = Signal(
+        ticker="BBB",
+        timestamp=datetime(2024, 1, 15, 20, 0, 0, tzinfo=timezone.utc),
+        score=0.0,
+        rules_passed=0,
+        rules_total=1,
+        rule_results=[RuleResult(rule_name="oversold_rsi", passed=False, weight=2.0, detail={})],
+        snapshot={},
+    )
+    assert len(_plain_english_takeaway(all_passed, 0.7, _RULE_DESCRIPTIONS)) > 0
+    assert len(_plain_english_takeaway(all_failed, 0.7, _RULE_DESCRIPTIONS)) > 0

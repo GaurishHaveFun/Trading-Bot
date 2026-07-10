@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from screener.config import RulesConfig, load_rules_config, load_watchlist
+from screener.config import RuleConfig, RulesConfig, load_rules_config, load_watchlist
 
 RULES_YAML = Path(__file__).parent.parent / "config" / "rules.yaml"
 WATCHLIST_YAML = Path(__file__).parent.parent / "config" / "watchlist.yaml"
@@ -39,6 +39,17 @@ def test_schedule_parsed():
     config = load_rules_config(RULES_YAML)
     assert config.schedule.on == "0 16 * * 1-5"
     assert config.schedule.timezone == "America/New_York"
+
+
+def test_rule_config_description_field():
+    rule = RuleConfig(name="x", weight=1.0, condition="true", description="y")
+    assert rule.description == "y"
+
+
+def test_all_rules_have_descriptions():
+    config = load_rules_config(RULES_YAML)
+    for rule in config.rules:
+        assert rule.description != ""
 
 
 # --- watchlist ---

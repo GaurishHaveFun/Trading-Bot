@@ -136,23 +136,35 @@ The `Z` suffix is the standard ISO 8601 designator for UTC (`+00:00`). It is pre
 
 Renders the same `ScreenerRun`/`Signal` models to a styled PDF using reportlab's `platypus` API (`SimpleDocTemplate`, `Table`, `TableStyle`, `Paragraph`, `Spacer`). This exists because the locked JSON schema above is great for Phase 3 but hard for a human to scan; the PDF is a second, additive artifact — it never changes what `write_run` writes.
 
-### `write_report(run, output_dir)`
+### `write_report(run, output_dir, rule_descriptions=None)`
 
-**Signature:** `write_report(run: ScreenerRun, output_dir: Path = Path("output/reports")) -> Path`
+**Signature:** `write_report(run: ScreenerRun, output_dir: Path = Path("output/reports"), rule_descriptions: dict[str, str] | None = None) -> Path`
 
 Writes the full multi-ticker report to `output/reports/report_<UTC_ISO>.pdf`, using the same `run.run_timestamp.strftime("%Y%m%dT%H%M%SZ")` naming convention as `json_writer.write_run`. Contents, top to bottom:
 
 1. **Header block** — title, run timestamp (UTC, `Z`-suffixed via `_fmt_ts`, same convention as `json_writer._fmt`), universe, alert threshold, and signal counts (total / at-or-above threshold).
-2. **Ranked summary table** — one row per signal in the order given (already score-descending from `main.py:run_screener`): Rank, Ticker, Score %, Rules (`4/5`), Watchlist (Yes/No), Close, Change %, RSI-14, SMA-200, P/B. Rows scoring at/above `alert_threshold` are shaded and bolded via `TableStyle`.
-3. **Per-ticker sections** — one per signal, each with a heading (`TICKER — 81.00% — 4/5 rules`), a one-line formatted snapshot, and a full rule breakdown table (Rule / Pass ✓·✗ / Weight / Detail).
+2. **"How to Read This Report" block** (only rendered when `rule_descriptions` is passed and non-empty) — a plain-English glossary (`_GLOSSARY`: Score, Rules passed, Close, Volume, Change %, RSI-14, SMA-50/SMA-200, ATR-14, P/B) followed by a "What each check means" section pairing each rule's humanized name with its `description` string sourced from `config/rules.yaml` (threaded through by `main.py`).
+3. **Ranked summary table** — one row per signal in the order given (already score-descending from `main.py:run_screener`): Rank, Ticker, Score %, Rules (`4/5`), Watchlist (Yes/No), Close, Change %, RSI-14, SMA-200, P/B. Rows scoring at/above `alert_threshold` are shaded and bolded via `TableStyle`.
+4. **Per-ticker sections** — one per signal, each with a heading (`TICKER — 81.00% — 4/5 rules`), a one-line formatted snapshot, an optional plain-English takeaway (see below), and a full rule breakdown table (Rule / Pass ✓·✗ / Weight / Detail).
+
+When `rule_descriptions` is `None` or `{}` (the default), none of the new blocks are rendered and output is unchanged from before this feature — existing callers that don't pass the argument see byte-identical behavior.
 
 Logs `report_written` (path, signal count) via the module's `structlog` logger, same pattern as `json_writer.write_run`'s `run_written` event.
 
-### `write_ticker_report(signal, alert_threshold, universe, output_dir)`
+### `write_ticker_report(signal, alert_threshold, universe, output_dir, rule_descriptions=None)`
 
-**Signature:** `write_ticker_report(signal: Signal, alert_threshold: float, universe: str, output_dir: Path = Path("output/reports")) -> Path`
+**Signature:** `write_ticker_report(signal: Signal, alert_threshold: float, universe: str, output_dir: Path = Path("output/reports"), rule_descriptions: dict[str, str] | None = None) -> Path`
 
-Single-ticker version used by `--ticker` debug mode. Writes `output/reports/report_<TICKER>_<UTC_ISO>.pdf` (timestamp taken at call time, since a lone `Signal` carries no run timestamp). Internally wraps the signal in a throwaway `ScreenerRun` and calls the same `_header_block`/`_ticker_section` helpers as `write_report`, so the per-ticker layout has one source of truth shared by both entry points — no duplicated rendering logic.
+Single-ticker version used by `--ticker` debug mode. Writes `output/reports/report_<TICKER>_<UTC_ISO>.pdf` (timestamp taken at call time, since a lone `Signal` carries no run timestamp). Internally wraps the signal in a throwaway `ScreenerRun` and calls the same `_header_block`/`_ticker_section` helpers as `write_report`, so the per-ticker layout has one source of truth shared by both entry points — no duplicated rendering logic. Same optional `rule_descriptions` behavior as `write_report`: passing it adds the "How to Read This Report" block and the per-ticker plain-English takeaway; omitting it leaves the report unchanged.
+
+### Plain-English additions (`_how_to_read_block`, `_plain_english_takeaway`)
+
+Two purely additive helpers, both gated on a truthy `rule_descriptions: dict[str, str]` (rule name → description, sourced from `config/rules.yaml`'s `description:` field and threaded through by `main.py` as `{r.name: r.description for r in rules_config.rules}`):
+
+- **`_how_to_read_block(rule_descriptions)`** — the glossary + per-rule explanation block described above, inserted once near the top of the report (after the header, before the summary table).
+- **`_plain_english_takeaway(signal, alert_threshold, rule_descriptions)`** — a short per-ticker verdict inserted into `_ticker_section` above the numeric rule table: "Strong match" (score ≥ `alert_threshold`), "Partial match" (score ≥ 0.5), or "Weak match", plus "cleared X of Y checks", and two lines listing which rules (by humanized name) were met (✓) and missed (✗).
+
+Neither function touches the numeric tables (`_summary_table`, `_rule_table`) or any model — they only add `Paragraph`/`Spacer` flowables built from data already on `Signal`/`ScreenerRun` plus the caller-supplied descriptions.
 
 ### Formatting helpers
 
