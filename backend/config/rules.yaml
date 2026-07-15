@@ -8,7 +8,7 @@ rules:
     condition: "in_watchlist or is_chip"
     description: "A major technology or semiconductor company — the kind this screener focuses on."
   - name: oversold_band
-    weight: 2.0
+    weight: 0.6
     condition: "rsi(14) > 25 and rsi(14) < 40"
     description: "The stock has fallen enough recently to look potentially cheap (RSI between 25 and 40)."
   - name: quality_uptrend
