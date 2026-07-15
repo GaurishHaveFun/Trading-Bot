@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     alpaca_key: str = ""
     alpaca_secret: str = ""
+    schwab_app_key: str = ""
+    schwab_app_secret: str = ""
+    schwab_callback_url: str = "https://127.0.0.1:8182"
+    schwab_token_path: str = ".cache/schwab_token.json"
+    data_provider: str = "schwab"
     alert_threshold: float = 0.70
     log_level: str = "INFO"
     universe: str = "losers"  # "static" | "losers"

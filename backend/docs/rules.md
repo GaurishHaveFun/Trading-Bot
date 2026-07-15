@@ -106,9 +106,9 @@ score = Σ weight(r) for r in results if r.passed
 - Returns a value in `[0.0, 1.0]`.
 - Higher weight rules contribute proportionally more to the score.
 
-Example with spec weights (2.0 + 2.0 + 1.5 + 1.0 + 1.0 + 0.5 + 1.5 = 9.5 total: `big_tech_or_chip`, `oversold_band`, `quality_uptrend`, `medium_term_momentum`, `macd_bullish`, `near_52w_low`, `undervalued_pb`):
+Example with spec weights (2.0 + 0.6 + 1.5 + 1.0 + 1.0 + 0.5 + 1.5 = 8.1 total: `big_tech_or_chip`, `oversold_band`, `quality_uptrend`, `medium_term_momentum`, `macd_bullish`, `near_52w_low`, `undervalued_pb`):
 - All 7 pass → score = 1.0
-- Only `near_52w_low` passes → score = 0.5 / 9.5 ≈ 0.0526
+- Only `near_52w_low` passes → score = 0.5 / 8.1 ≈ 0.0617
 
 ---
 

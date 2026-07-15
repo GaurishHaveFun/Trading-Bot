@@ -142,7 +142,7 @@ Current rules:
 | Name | Weight | Condition |
 |---|---|---|
 | big_tech_or_chip | 2.0 | `in_watchlist or is_chip` |
-| oversold_band | 2.0 | `rsi(14) > 25 and rsi(14) < 40` |
+| oversold_band | 0.6 | `rsi(14) > 25 and rsi(14) < 40` |
 | quality_uptrend | 1.5 | `close > sma(200)` |
 | medium_term_momentum | 1.0 | `sma(50) > sma(100)` |
 | macd_bullish | 1.0 | `macd_line() > macd_signal_line()` |

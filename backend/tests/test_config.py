@@ -39,7 +39,7 @@ def test_rule_weights():
     config = load_rules_config(RULES_YAML)
     weight_map = {r.name: r.weight for r in config.rules}
     assert weight_map["big_tech_or_chip"] == 2.0
-    assert weight_map["oversold_band"] == 2.0
+    assert weight_map["oversold_band"] == 0.6
     assert weight_map["quality_uptrend"] == 1.5
     assert weight_map["medium_term_momentum"] == 1.0
     assert weight_map["macd_bullish"] == 1.0

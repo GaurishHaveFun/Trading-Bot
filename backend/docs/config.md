@@ -84,7 +84,7 @@ cfg = load_rules_config(Path("config/rules.yaml"))
 for rule in cfg.rules:
     print(rule.name, rule.weight, rule.condition)
 # big_tech_or_chip 2.0 in_watchlist or is_chip
-# oversold_band    2.0 rsi(14) > 25 and rsi(14) < 40
+# oversold_band    0.6 rsi(14) > 25 and rsi(14) < 40
 # quality_uptrend  1.5 close > sma(200)
 # near_52w_low     1.0 close <= low_52w(252) * 1.15
 # undervalued_pb   1.5 price_to_book < 4

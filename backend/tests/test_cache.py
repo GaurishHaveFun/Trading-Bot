@@ -79,6 +79,22 @@ def test_interval_isolation(cache):
     assert len(result_h) == 1
 
 
+def test_put_replace_overwrites_existing_row(cache):
+    bar_a = _make_bar(1, close=100.0)
+    cache.put("AAPL", [bar_a])
+
+    bar_b = _make_bar(1, close=124.0)  # same (symbol, timestamp, interval) key
+    cache.put_replace("AAPL", [bar_b])
+
+    result = cache.get(
+        "AAPL",
+        datetime(2024, 1, 1, tzinfo=timezone.utc),
+        datetime(2024, 1, 2, tzinfo=timezone.utc),
+    )
+    assert len(result) == 1
+    assert result[0].close == pytest.approx(124.0)
+
+
 def test_autocreates_db_directory(tmp_path):
     nested = tmp_path / "a" / "b" / "c"
     cache = BarCache(db_path=nested / "bars.db")

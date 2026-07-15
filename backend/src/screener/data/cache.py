@@ -65,9 +65,18 @@ class BarCache:
 
     def put(self, symbol: str, bars: list[Bar], interval: str = "1d") -> None:
         """Insert bars into the cache, ignoring duplicates."""
+        self._put(symbol, bars, interval, verb="INSERT OR IGNORE")
+
+    def put_replace(self, symbol: str, bars: list[Bar], interval: str = "1d") -> None:
+        """Insert bars into the cache, overwriting any existing row with the same
+        (symbol, timestamp, interval) primary key. Used to correct stale
+        provisional bars (e.g. today's bar refetched after a late price revision)."""
+        self._put(symbol, bars, interval, verb="INSERT OR REPLACE")
+
+    def _put(self, symbol: str, bars: list[Bar], interval: str, verb: str) -> None:
         self._conn.executemany(
-            """
-            INSERT OR IGNORE INTO bars
+            f"""
+            {verb} INTO bars
                 (symbol, timestamp, interval, open, high, low, close, volume)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,

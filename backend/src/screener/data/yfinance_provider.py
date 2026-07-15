@@ -47,6 +47,19 @@ class YFinanceProvider(DataProvider):
                 if tail:
                     self._cache.put(symbol, tail, interval)
 
+            # Refresh today's bar if we already had a provisional row for it —
+            # a same-day cache hit otherwise pins the stale pre-close price for
+            # the rest of the day (see backend/CLAUDE.md bug notes).
+            today = datetime.now(timezone.utc).date()
+            requested_start = start.astimezone(timezone.utc).date()
+            requested_end = end.astimezone(timezone.utc).date()
+            if requested_start <= today <= requested_end and cached_end.date() == today:
+                today_start = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+                refreshed = await self._fetch(symbol, today_start, end, interval)
+                if refreshed:
+                    logger.info("refreshing_today_bar", symbol=symbol, date=str(today))
+                    self._cache.put_replace(symbol, refreshed, interval)
+
             # Re-query to get the full merged result
             return self._cache.get(symbol, start, end, interval)
 

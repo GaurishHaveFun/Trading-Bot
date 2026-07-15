@@ -86,7 +86,7 @@ Future API keys (stubbed in .env.example): `FINNHUB_API_KEY`, `ALPACA_KEY`, `ALP
       "rules_total": 5,
       "snapshot": {"close": 192.31, "volume": 54000000, "rsi_14": 31.2, "sma_50": 188.4, "sma_200": 175.1, "atr_14": 4.2, "price_to_book": 3.1, "change_pct": -1.85, "in_watchlist": true, "industry": "Consumer Electronics", "is_chip": false},
       "rule_results": [
-        {"rule_name": "oversold_band", "passed": true, "weight": 2.0, "detail": {"close": 192.31, "volume": 54000000, "in_watchlist": true, "is_chip": false, "price_to_book": 3.1, "rsi_14": 31.2}}
+        {"rule_name": "oversold_band", "passed": true, "weight": 0.6, "detail": {"close": 192.31, "volume": 54000000, "in_watchlist": true, "is_chip": false, "price_to_book": 3.1, "rsi_14": 31.2}}
       ]
     }
   ]
@@ -98,7 +98,7 @@ Future API keys (stubbed in .env.example): `FINNHUB_API_KEY`, `ALPACA_KEY`, `ALP
 | Name | Weight | Condition |
 |------|--------|-----------|
 | big_tech_or_chip | 2.0 | `in_watchlist or is_chip` |
-| oversold_band | 2.0 | `rsi(14) > 25 and rsi(14) < 40` |
+| oversold_band | 0.6 | `rsi(14) > 25 and rsi(14) < 40` |
 | quality_uptrend | 1.5 | `close > sma(200)` |
 | medium_term_momentum | 1.0 | `sma(50) > sma(100)` |
 | macd_bullish | 1.0 | `macd_line() > macd_signal_line()` |

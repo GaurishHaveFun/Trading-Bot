@@ -28,7 +28,7 @@ filtered_rules = [r for r in rules_config.rules if r.name != "undervalued_pb"]
 engine = RuleEngine(filtered_rules)
 ```
 
-This leaves 4 rules — `big_tech_or_chip` (2.0), `oversold_band` (2.0), `quality_uptrend` (1.5), `near_52w_low` (1.0) — with a combined weight of **6.5** instead of the live pipeline's 8.0. `RuleEngine.score()` already computes `passed_weight / total_weight` of whatever rules it was constructed with (see `docs/rules.md`), so this rescaling is automatic — no new scoring math was needed. It does mean backtest scores and live scores are **not directly comparable** (a backtest score of 77% reflects 5.0/6.5, not 5.0/8.0); the PDF's caveats block calls this out explicitly.
+This leaves 6 rules — `big_tech_or_chip` (2.0), `oversold_band` (0.6), `quality_uptrend` (1.5), `medium_term_momentum` (1.0), `macd_bullish` (1.0), `near_52w_low` (0.5) — with a combined weight of **6.6** instead of the live pipeline's 8.1 (all 7 rules). `RuleEngine.score()` already computes `passed_weight / total_weight` of whatever rules it was constructed with (see `docs/rules.md`), so this rescaling is automatic — no new scoring math was needed. It does mean backtest scores and live scores are **not directly comparable** (a backtest score of 61% reflects 4.0/6.6, not 5.0/8.1); the PDF's caveats block calls this out explicitly.
 
 ### Fixed 5-trading-day hold
 
@@ -67,7 +67,7 @@ Takes one symbol's full ascending bar list (already fetched by the caller) and d
 The last `eval_days` such valid indices are walked (trailing window — this is what `--days 30` controls). For each:
 
 1. Compute the forward return for **every** valid day, signal or not: `(bars[i+holding_days].close - bars[i].close) / bars[i].close * 100`. This always gets appended to the second return value — the baseline series (see below).
-2. Evaluate the rules with no look-ahead: `engine.evaluate(symbol, bars[:i+1], meta=None, watchlist=watchlist)`, then `engine.score(results)`. `meta=None` is safe here since none of the 4 backtest rules touch quote metadata (only the dropped `undervalued_pb` rule needs it).
+2. Evaluate the rules with no look-ahead: `engine.evaluate(symbol, bars[:i+1], meta=None, watchlist=watchlist)`, then `engine.score(results)`. `meta=None` is safe here since none of the 6 backtest rules touch quote metadata (only the dropped `undervalued_pb` rule needs it).
 3. If `score >= threshold`, build a `BacktestTrade` (buy close = `bars[i].close`, sell close = `bars[i+holding_days].close`, `win = return_pct > 0`) and append it to the trades list.
 
 Returns `(trades, all_forward_returns)`.
@@ -81,7 +81,7 @@ run_backtest(days: int = 30, holding_days: int = 5) -> BacktestResult
 ```
 
 1. Loads settings, `config/rules.yaml`, and `config/watchlist.yaml` via the same `screener.config` functions `main.py` already uses.
-2. Builds the filtered 4-rule `RuleEngine` (see above).
+2. Builds the filtered 6-rule `RuleEngine` (see above).
 3. Fetches bars for every watchlist symbol via `YFinanceProvider` + `BarCache` (same `_CACHE_PATH = .cache/bars.db` as the live pipeline — a warm cache from a prior `--once`/`--ticker`/`--backtest` run speeds this up), using a lookback of **500 calendar days** (comment in `engine.py` explains the math: ~250-260 trading days in 500 calendar days comfortably covers 200 trailing bars + up to ~30 eval days + a few holding days of forward window).
 4. Mirrors `main.py:run_screener`'s concurrency pattern exactly: `asyncio.Semaphore(10)` + `asyncio.gather(..., return_exceptions=True)`. Symbols that error out or come back with fewer than 200 bars are logged (`structlog` `fetch_error`/`insufficient_bars` warnings, same event names as the live pipeline) and skipped — never raise.
 5. Calls `evaluate_symbol(...)` per symbol, accumulating all trades and all forward returns.
@@ -123,7 +123,7 @@ write_backtest_report(result: BacktestResult, output_dir: Path = _OUTPUT_DIR) ->
 
 Writes `output/reports/backtest_<UTC_ISO>.pdf` — a distinct file family from `report_<UTC>.pdf`/`report_<TICKER>_<UTC>.pdf`, never merged with or overwriting them. Reuses `pdf_writer.py`'s existing formatting helpers (`_fmt_num`, `_fmt_pct`, `_fmt_ts` — Eastern time) and `TableStyle` patterns (`_rule_table`'s green/red pass-fail coloring is mirrored for win/loss rows). Sections, top to bottom:
 
-1. **Caveats block** — watchlist-only universe, `undervalued_pb` dropped (4-rule/6.5-weight denominator, not 8.0), fixed 5-day hold, no transaction costs/slippage, small sample size.
+1. **Caveats block** — watchlist-only universe, `undervalued_pb` dropped (6-rule/6.6-weight denominator, not 8.1), fixed 5-day hold, no transaction costs/slippage, small sample size.
 2. **Summary table** — period, universe, holding days, alert threshold, total signals, wins/losses, win rate, avg/total/best/worst return, and the baseline avg forward return, followed by the highlighted `Signal avg return vs. baseline: ±X.XX pp` line (green if positive, red if negative).
 3. **Trades table** — Ticker, Signal Date, Score, Buy Close, Sell Date, Sell Close, Return %, Result (WIN/LOSS), sorted by return descending as given. If no trades fired, shows "No signals fired in this window." instead of an empty table.
 

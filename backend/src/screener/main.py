@@ -9,6 +9,7 @@ from pathlib import Path
 from screener.backtest import run_backtest
 from screener.config import get_settings, load_quality_screen_config, load_rules_config, load_watchlist
 from screener.data import BarCache, FundamentalsCache, FundamentalsProvider, YFinanceProvider
+from screener.data.schwab import SchwabAuth
 from screener.models import Bar, BacktestResult, FundamentalsSnapshot, RuleResult, ScreenerRun, Signal
 from screener.output import write_backtest_report, write_report, write_run, write_ticker_report
 from screener.rules import RuleEngine, evaluate_quality_gate
@@ -305,6 +306,24 @@ async def run_backtest_cli(days: int, holding_days: int) -> None:
     print()
 
 
+def run_auth_schwab() -> None:
+    """--auth-schwab mode: run the one-time interactive Schwab OAuth
+    authorization flow and exit. Pure orchestration — all OAuth logic lives
+    in screener.data.schwab.auth."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    print("Opening browser for Schwab login...")
+    auth = SchwabAuth(
+        app_key=settings.schwab_app_key,
+        app_secret=settings.schwab_app_secret,
+        callback_url=settings.schwab_callback_url,
+        token_path=settings.schwab_token_path,
+    )
+    auth.authorize()
+    print(f"Schwab authorization complete. Token saved to {settings.schwab_token_path}")
+
+
 def _start_scheduler() -> None:
     """Start the APScheduler cron loop (imported lazily to keep main.py clean)."""
     from screener.scheduler import start  # implemented in Step 9
@@ -319,6 +338,10 @@ def main() -> None:
     group.add_argument(
         "--backtest", action="store_true",
         help="Run a historical backtest of the current rules over the watchlist",
+    )
+    group.add_argument(
+        "--auth-schwab", action="store_true",
+        help="Run the one-time interactive Schwab OAuth authorization flow",
     )
     parser.add_argument(
         "--days", type=int, default=30,
@@ -336,6 +359,8 @@ def main() -> None:
         asyncio.run(run_ticker_debug(args.ticker.upper()))
     elif args.backtest:
         asyncio.run(run_backtest_cli(args.days, args.hold))
+    elif args.auth_schwab:
+        run_auth_schwab()
     else:
         _start_scheduler()
 

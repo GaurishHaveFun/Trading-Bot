@@ -32,14 +32,14 @@ Big-tech + chip symbols: AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, AMD, AVGO, T
 | Name | Weight | Condition |
 |------|--------|-----------|
 | big_tech_or_chip | 2.0 | `in_watchlist` |
-| oversold_band | 2.0 | `rsi(14) > 25 and rsi(14) < 40` |
+| oversold_band | 0.6 | `rsi(14) > 25 and rsi(14) < 40` |
 | quality_uptrend | 1.5 | `close > sma(200)` |
-| near_52w_low | 1.0 | `close <= low_52w(252) * 1.15` |
+| near_52w_low | 0.5 | `close <= low_52w(252) * 1.15` |
 | undervalued_pb | 1.5 | `price_to_book < 4` |
 
-**Total weight:** 8.0  
-**Alert threshold:** 0.70 → ~5.6 weight needed to trigger  
-**Example:** A big-tech name that's oversold, in long uptrend, near its 52w low scores `2.0 + 2.0 + 1.5 + 1.0 = 6.5 / 8.0 = 0.81` → fires alert.
+**Total weight:** 6.1  
+**Alert threshold:** 0.70 → ~4.27 weight needed to trigger  
+**Example:** A big-tech name that's oversold, in long uptrend, near its 52w low scores `2.0 + 0.6 + 1.5 + 0.5 = 4.6 / 6.1 = 0.75` → fires alert.
 
 ## Scoring Note
 P/B and "big tech" fire on different stocks — mega-cap tech has P/B ~40+, so `price_to_book < 4` rarely triggers for watchlist names (it flags value/energy/financials instead). Soft weighted scoring absorbs this: a stock scores well on the rules it hits. The `near_52w_low` rule is the better "quality name on sale" signal for tech. All weights are in `rules.yaml` and tunable.
