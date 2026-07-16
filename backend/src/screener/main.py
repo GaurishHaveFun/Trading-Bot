@@ -8,32 +8,28 @@ from pathlib import Path
 
 from screener.backtest import run_backtest
 from screener.config import get_settings, load_quality_screen_config, load_rules_config, load_watchlist
-from screener.data import BarCache, FundamentalsCache, FundamentalsProvider, YFinanceProvider
+from screener.data import BarCache, FundamentalsCache
+from screener.data.factory import (
+    build_bar_provider,
+    build_fundamentals_provider,
+    build_quote_lookup_provider,
+    build_universe_provider,
+)
 from screener.data.schwab import SchwabAuth
 from screener.models import Bar, BacktestResult, FundamentalsSnapshot, RuleResult, ScreenerRun, Signal
 from screener.output import write_backtest_report, write_report, write_run, write_ticker_report
 from screener.rules import RuleEngine, evaluate_quality_gate
-from screener.universe import LosersUniverse, StaticUniverse, UniverseProvider
 from screener.utils.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
 
 _RULES_PATH = Path("config/rules.yaml")
-_UNIVERSE_PATH = Path("config/universe.yaml")
 _QUALITY_SCREEN_PATH = Path("config/quality_screen.yaml")
 _CACHE_PATH = Path(".cache/bars.db")
 _FUNDAMENTALS_CACHE_PATH = Path(".cache/fundamentals.db")
 _MIN_BARS = 200
 _LOOKBACK_DAYS = 375  # ~250 trading days
 _CONCURRENCY = 10
-
-
-def _build_universe(universe_setting: str, watchlist: set[str]) -> UniverseProvider:
-    """Select the universe provider by config setting (orchestration only —
-    provider construction, no filtering/scoring logic lives here)."""
-    if universe_setting == "losers":
-        return LosersUniverse(watchlist=watchlist)
-    return StaticUniverse(_UNIVERSE_PATH)
 
 
 async def run_screener() -> ScreenerRun:
@@ -44,14 +40,14 @@ async def run_screener() -> ScreenerRun:
     rules_config = load_rules_config(_RULES_PATH)
     quality_screen_config = load_quality_screen_config(_QUALITY_SCREEN_PATH)
     watchlist = load_watchlist(settings.watchlist_path)
-    universe = _build_universe(settings.universe, watchlist)
-    symbols = universe.get_symbols()
-    quotes = universe.get_quotes()
+    universe = build_universe_provider(settings, watchlist)
+    symbols = await universe.get_symbols()
+    quotes = await universe.get_quotes()
 
     cache = BarCache(_CACHE_PATH)
-    provider = YFinanceProvider(cache)
+    provider = build_bar_provider(settings, cache)
     fundamentals_cache = FundamentalsCache(_FUNDAMENTALS_CACHE_PATH)
-    fundamentals_provider = FundamentalsProvider(fundamentals_cache)
+    fundamentals_provider = build_fundamentals_provider(settings, fundamentals_cache)
     engine = RuleEngine(rules_config.rules)
 
     end = datetime.now(timezone.utc)
@@ -214,9 +210,9 @@ async def run_ticker_debug(symbol: str) -> None:
     quality_screen_config = load_quality_screen_config(_QUALITY_SCREEN_PATH)
     watchlist = load_watchlist(settings.watchlist_path)
     cache = BarCache(_CACHE_PATH)
-    provider = YFinanceProvider(cache)
+    provider = build_bar_provider(settings, cache)
     fundamentals_cache = FundamentalsCache(_FUNDAMENTALS_CACHE_PATH)
-    fundamentals_provider = FundamentalsProvider(fundamentals_cache)
+    fundamentals_provider = build_fundamentals_provider(settings, fundamentals_cache)
     engine = RuleEngine(rules_config.rules)
 
     end = datetime.now(timezone.utc)
@@ -243,7 +239,7 @@ async def run_ticker_debug(symbol: str) -> None:
         fundamentals_cache.close()
         return
 
-    meta = LosersUniverse(watchlist=watchlist).quote_for(symbol)
+    meta = await build_quote_lookup_provider(settings, watchlist).quote_for(symbol)
     rule_results = engine.evaluate(symbol, bars, meta=meta, watchlist=watchlist)
     score = engine.score(rule_results)
     rules_passed = sum(1 for r in rule_results if r.passed)

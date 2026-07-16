@@ -25,7 +25,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from screener.config import RuleConfig, get_settings, load_rules_config, load_watchlist
-from screener.data import BarCache, YFinanceProvider
+from screener.data import BarCache
+from screener.data.factory import build_bar_provider
 from screener.models import Bar, BacktestResult, BacktestTrade, RuleAttribution
 from screener.rules import RuleEngine
 from screener.utils.logging import get_logger
@@ -185,7 +186,7 @@ async def run_backtest(days: int = 30, holding_days: int = 5) -> BacktestResult:
     total_weight = sum(r.weight for r in filtered_rules)
 
     cache = BarCache(_CACHE_PATH)
-    provider = YFinanceProvider(cache)
+    provider = build_bar_provider(settings, cache)
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=_LOOKBACK_DAYS)

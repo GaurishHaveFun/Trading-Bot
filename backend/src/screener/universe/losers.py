@@ -22,7 +22,7 @@ class LosersUniverse(UniverseProvider):
         self._watchlist = watchlist or set()
         self._quotes: dict[str, dict] = {}
 
-    def get_symbols(self) -> list[str]:
+    async def get_symbols(self) -> list[str]:
         """Top-15 (by % loss) large-cap equity losers, unioned with watchlist
         symbols currently down today. Also stashes quote metadata for
         `get_quotes()`, fetched once per call."""
@@ -41,12 +41,12 @@ class LosersUniverse(UniverseProvider):
         self._quotes = quotes
         return sorted(quotes.keys())
 
-    def get_quotes(self) -> dict[str, dict]:
+    async def get_quotes(self) -> dict[str, dict]:
         """Per-symbol metadata (price_to_book, change_pct, market_cap) for the
         symbols returned by the most recent `get_symbols()` call."""
         return dict(self._quotes)
 
-    def quote_for(self, symbol: str) -> dict | None:
+    async def quote_for(self, symbol: str) -> dict | None:
         """Fetch and shape quote metadata for a single arbitrary symbol
         (used by `--ticker` debug mode, which may target a name outside the
         current day's losers screen)."""

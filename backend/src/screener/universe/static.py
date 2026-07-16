@@ -9,7 +9,7 @@ class StaticUniverse(UniverseProvider):
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
 
-    def get_symbols(self) -> list[str]:
+    async def get_symbols(self) -> list[str]:
         with open(self._path, "r") as f:
             data = yaml.safe_load(f)
         return [str(s) for s in data["symbols"]]

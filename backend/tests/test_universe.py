@@ -15,23 +15,23 @@ UNIVERSE_YAML = Path(__file__).parent.parent / "config" / "universe.yaml"
 
 # --- StaticUniverse tests ---
 
-def test_static_universe_returns_10_symbols():
+async def test_static_universe_returns_10_symbols():
     u = StaticUniverse(UNIVERSE_YAML)
-    symbols = u.get_symbols()
+    symbols = await u.get_symbols()
     assert len(symbols) == 10
 
 
-def test_static_universe_contains_expected():
+async def test_static_universe_contains_expected():
     u = StaticUniverse(UNIVERSE_YAML)
-    symbols = u.get_symbols()
+    symbols = await u.get_symbols()
     assert "AAPL" in symbols
     assert "MSFT" in symbols
     assert "WMT" in symbols
 
 
-def test_static_universe_returns_strings():
+async def test_static_universe_returns_strings():
     u = StaticUniverse(UNIVERSE_YAML)
-    for s in u.get_symbols():
+    for s in await u.get_symbols():
         assert isinstance(s, str)
 
 
