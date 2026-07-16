@@ -2,9 +2,12 @@ name: Screener
 
 on:
   schedule:
-    # 21:00 UTC daily = 4pm EST / 5pm EDT. GitHub cron is UTC-only (no DST
-    # awareness), so this drifts an hour relative to market close across the
-    # year — nudge to "0 20 * * *" for summer-accurate 4pm ET if it matters.
+    # 17:00 UTC daily = 12pm EST / 1pm EDT, and 21:00 UTC daily = 4pm EST /
+    # 5pm EDT. GitHub cron is UTC-only (no DST awareness), so both entries
+    # drift an hour early relative to market hours during EDT (summer) —
+    # nudge to "0 16 * * *" / "0 20 * * *" for summer-accurate 12pm/4pm ET
+    # if it matters.
+    - cron: "0 17 * * *"
     - cron: "0 21 * * *"
   workflow_dispatch:
     inputs:
