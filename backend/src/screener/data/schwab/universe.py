@@ -3,7 +3,10 @@
 
 Mirrors `screener.universe.losers.LosersUniverse`'s public shape
 (`get_symbols`, `get_quotes`, `quote_for`) but sources data from Schwab's
-movers + quotes endpoints via `SchwabClient` instead of yfinance.
+movers + quotes + instruments endpoints via `SchwabClient` instead of
+yfinance. (The instruments endpoint was added to backfill `priceToBook`/
+`marketCap`, which are CONFIRMED LIVE to be absent from the quotes endpoint
+entirely — see `_fetch_instruments_fundamentals`'s docstring.)
 
 Deliberate sync/async divergence from `UniverseProvider` (flagged, not
 fixed here)
@@ -145,10 +148,17 @@ class SchwabLosersUniverse(UniverseProvider):
         has no documented market-cap/quote-type field, so — unlike
         `LosersUniverse`, which filters directly on the single yfinance
         `day_losers` screen response — this filters on the flattened
-        *quotes* response instead (`quoteType`/`marketCap`, sourced from the
-        quotes endpoint's `reference`/`fundamental` sections; see
-        `_flatten_quote_entry`), which is fetched for every mover symbol in
-        `get_symbols` before this is called."""
+        *quotes* response instead. `quoteType` (`assetMainType`) comes from
+        the quotes endpoint itself, but `marketCap` (and `priceToBook`) is
+        CONFIRMED LIVE (this session) to be ALWAYS ABSENT from the quotes
+        endpoint's `fundamental` section — it is instead merged in from a
+        second call to the `/marketdata/v1/instruments` endpoint
+        (`_fetch_instruments_fundamentals`, invoked from
+        `_fetch_quotes_batch`); see that method's docstring for the
+        confirmed field sourcing. Before that merge existed, `marketCap` was
+        always `None` here, which meant the `>= _MIN_MARKET_CAP` check below
+        always evaluated false and silently dropped every Schwab-sourced
+        candidate — that bug is what the instruments merge fixes."""
         filtered = [
             c
             for c in candidates
@@ -176,24 +186,43 @@ class SchwabLosersUniverse(UniverseProvider):
         return quotes.get(symbol)
 
     async def _fetch_quotes_batch(self, symbols: list[str]) -> dict[str, dict]:
-        """Call Schwab's quotes endpoint for one or more symbols and return
-        a dict of flattened quote dicts keyed by symbol. Any failure
-        (exception, non-dict payload) is caught/logged and yields an empty
-        dict rather than raising.
+        """Call Schwab's quotes endpoint for one or more symbols, then merge
+        in `priceToBook`/`marketCap` from a second call to the instruments
+        endpoint (`_fetch_instruments_fundamentals`), and return a dict of
+        flattened quote dicts keyed by symbol. Any failure in the quotes
+        call itself (exception, non-dict payload) is caught/logged and
+        yields an empty dict for the whole batch rather than raising; a
+        failure in the instruments call is handled independently (see
+        `_fetch_instruments_fundamentals`) and only ever degrades
+        `priceToBook`/`marketCap` to `None` — it never discards the quotes
+        half of the result.
 
-        # NOTE (originally UNVERIFIED, now CONFIRMED against the real Schwab
-        # OpenAPI spec pasted in from developer.schwab.com): the response is
-        # a dict keyed by symbol -> QuoteResponseObject. For equities
+        # NOTE (CONFIRMED against the real Schwab OpenAPI spec, and CONFIRMED
+        # LIVE this session against the actual API): the response is a dict
+        # keyed by symbol -> QuoteResponseObject. For equities
         # (EquityResponse) the top-level `assetMainType`/`assetSubType`/
         # `symbol`/`quoteType` fields plus the nested `quote` (QuoteEquity),
-        # `fundamental` (Fundamental/FundamentalInst), and `reference`
-        # (ReferenceEquity) sections are CONFIRMED CORRECT — this nesting is
-        # exactly what `_flatten_quote_entry` below reads. Within those
-        # sections, `fundamental.pbRatio`, `fundamental.marketCap`, and
-        # `entry.assetMainType` are CONFIRMED CORRECT field names.
-        # CONFIRMED BUG (now fixed): `quote.netPercentChangeInDouble` does
-        # NOT exist on QuoteEquity — the real field is `quote.netPercentChange`
-        # (see `_flatten_quote_entry` below, which now reads the correct key).
+        # `fundamental` (Fundamental), and `reference` (ReferenceEquity)
+        # sections are CONFIRMED CORRECT — this nesting is exactly what
+        # `_flatten_quote_entry` below reads. `entry.assetMainType` is
+        # CONFIRMED CORRECT.
+        # CONFIRMED LIVE BUG (this session, real GET /marketdata/v1/quotes
+        # call for AAPL): `fundamental.pbRatio` and `fundamental.marketCap`
+        # do NOT exist anywhere in the quotes endpoint's response — checked
+        # all 5 top-level field categories (`quote`/`fundamental`/
+        # `reference`/`extended`/`regular`), both fields are simply absent.
+        # This means `_flatten_quote_entry`'s reads of those two keys from
+        # the quotes response always resolve to `None` and CANNOT be fixed
+        # by reading the quotes endpoint differently — the data genuinely
+        # is not there. The real values live on a DIFFERENT endpoint,
+        # `/marketdata/v1/instruments` (`FUNDAMENTAL` projection), which
+        # CONFIRMED LIVE this session DOES carry both fields (see
+        # `_fetch_instruments_fundamentals`'s docstring) — that call is what
+        # actually populates `priceToBook`/`marketCap` below.
+        # CONFIRMED BUG (previously fixed): `quote.netPercentChangeInDouble`
+        # does NOT exist on QuoteEquity — the real field is
+        # `quote.netPercentChange` (see `_flatten_quote_entry` below, which
+        # reads the correct key).
         # CONFIRMED ABSENT: `reference.industry` / `reference.sector` are NOT
         # part of the real ReferenceEquity schema (confirmed fields are
         # cusip/description/exchange/exchangeName/fsiDesc/htbQuantity/
@@ -237,6 +266,76 @@ class SchwabLosersUniverse(UniverseProvider):
         for symbol, entry in payload.items():
             if isinstance(entry, dict):
                 result[symbol] = self._flatten_quote_entry(symbol, entry)
+
+        fundamentals = await self._fetch_instruments_fundamentals(list(result.keys()))
+        for symbol, fund in fundamentals.items():
+            if symbol in result:
+                result[symbol]["priceToBook"] = fund.get("priceToBook")
+                result[symbol]["marketCap"] = fund.get("marketCap")
+
+        return result
+
+    async def _fetch_instruments_fundamentals(self, symbols: list[str]) -> dict[str, dict]:
+        """Call Schwab's `/marketdata/v1/instruments` endpoint (via
+        schwab-py's typed `get_instruments`, `FUNDAMENTAL` projection) for
+        the same batch of symbols passed to `_fetch_quotes_batch`, and
+        return `{symbol: {"priceToBook": ..., "marketCap": ...}}`.
+
+        CONFIRMED LIVE (this session, real API calls): this is a genuinely
+        DIFFERENT endpoint from `get_quotes` (`/marketdata/v1/instruments`,
+        not `/marketdata/v1/quotes`) and its response envelope is shaped
+        differently too — a top-level `"instruments"` key holding a LIST of
+        entries (each with its own `"symbol"` field to match against), NOT
+        a dict keyed by symbol like `get_quotes`. Each entry's nested
+        `fundamental` object (`FundamentalInst`) DOES carry real `pbRatio`
+        and `marketCap` values (confirmed for AAPL: pbRatio=34.26882,
+        marketCap=4901758191440.0). CONFIRMED LIVE: passing multiple symbols
+        in one call (tested AAPL/MSFT/MDB together) returns multiple
+        entries in the `instruments` list — this is a true batch call, one
+        request per `_fetch_quotes_batch` invocation rather than one call
+        per symbol. CONFIRMED LIVE: a symbol Schwab doesn't recognize is
+        just silently omitted from the `instruments` list (no error, no
+        placeholder entry) — tested by mixing a bogus symbol into a batch
+        with AAPL, which returned only the AAPL entry.
+
+        Any failure (exception, non-dict payload) is caught/logged and
+        yields an empty dict for the whole batch; a symbol simply absent
+        from the response (unrecognized symbol, or any other per-symbol
+        omission) is left out of the returned dict entirely — callers
+        (`_fetch_quotes_batch`) treat a missing key here as "leave
+        priceToBook/marketCap as None for that symbol" rather than as an
+        error, so one bad symbol can never fail the whole batch.
+
+        Still genuinely UNVERIFIED: behavior for non-EQUITY `assetType`s
+        (only equities were live-tested this session)."""
+        if not symbols:
+            return {}
+        instrument = self._client.raw.Instrument
+        try:
+            payload = await self._client.call(
+                lambda: self._client.raw.get_instruments(
+                    symbols, projection=instrument.Projection.FUNDAMENTAL
+                ),
+                label="get_instruments",
+            )
+        except Exception as exc:
+            logger.warning("schwab_instruments_error", symbols=symbols, error=str(exc))
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+
+        result: dict[str, dict] = {}
+        for entry in payload.get("instruments", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            symbol = entry.get("symbol")
+            if not symbol:
+                continue
+            fundamental = entry.get("fundamental") or {}
+            result[symbol] = {
+                "priceToBook": fundamental.get("pbRatio"),
+                "marketCap": fundamental.get("marketCap"),
+            }
         return result
 
     @staticmethod
@@ -249,10 +348,18 @@ class SchwabLosersUniverse(UniverseProvider):
         honest/obvious source, the corresponding key here is `None` rather
         than a fabricated guess.
 
-        The `quote`/`fundamental`/`reference` nesting and the `pbRatio`/
-        `marketCap`/`assetMainType`/`netPercentChange` field names read below
-        are CONFIRMED CORRECT against the real Schwab OpenAPI spec (see the
-        NOTE on `_fetch_quotes_batch` above). `reference.industry` and
+        The `quote`/`fundamental`/`reference` nesting and the
+        `assetMainType`/`netPercentChange` field names read below are
+        CONFIRMED CORRECT against the real Schwab OpenAPI spec (see the NOTE
+        on `_fetch_quotes_batch` above). `fundamental.pbRatio` and
+        `fundamental.marketCap` are read here too for shape-completeness,
+        but are CONFIRMED LIVE (this session) to be ALWAYS ABSENT from the
+        quotes endpoint specifically — so `priceToBook`/`marketCap` below
+        always start out `None` and are then overwritten by
+        `_fetch_quotes_batch`'s separate instruments-endpoint merge
+        whenever that lookup succeeds for this symbol (see
+        `_fetch_instruments_fundamentals`); they are NOT absent from Schwab
+        entirely, just from this one endpoint. `reference.industry` and
         `reference.sector` are CONFIRMED ABSENT from the real ReferenceEquity
         schema and will always be `None` here when sourced directly from
         Schwab — industry/sector enrichment for Schwab quotes happens at the
@@ -263,8 +370,8 @@ class SchwabLosersUniverse(UniverseProvider):
         return {
             "symbol": symbol,
             "netPercentChange": quote.get("netPercentChange"),
-            "priceToBook": fundamental.get("pbRatio"),
-            "marketCap": fundamental.get("marketCap"),
+            "priceToBook": fundamental.get("pbRatio"),  # always None from quotes; see _fetch_quotes_batch's merge
+            "marketCap": fundamental.get("marketCap"),  # always None from quotes; see _fetch_quotes_batch's merge
             "quoteType": entry.get("assetMainType"),
             "industry": reference.get("industry"),
             "sector": reference.get("sector"),

@@ -6,7 +6,7 @@ failure — a transient Schwab failure for one symbol/call must not take down
 an entire run. Bars use a pure schwab-then-fallback composition
 (`_FallbackBarProvider`). Fundamentals and the losers-universe both instead
 MERGE Schwab with yfinance rather than picking one exclusively:
-`build_fundamentals_provider` layers Schwab's 3 real TTM metrics on top of a
+`build_fundamentals_provider` layers Schwab's 2 real TTM metrics on top of a
 full yfinance snapshot per-field when available (see
 `_MergedFundamentalsProvider`'s docstring), and `_build_losers_universe`'s
 `_MergedLosersUniverse` unions Schwab's movers (capped at ~10 by Schwab's own
@@ -317,15 +317,25 @@ class _NoOpFundamentalsCache:
 class _MergedFundamentalsProvider:
     """Schwab-augmented fundamentals: yfinance is the base/fallback source of
     truth for everything (`fcf_5y_cumulative`, `ocf_ni_ratio`,
-    `share_dilution_5y`, `years_available`, `ticker`, `as_of`), while
-    `interest_coverage`/`gross_margin`/`net_margin` are taken from Schwab's
-    real TTM quote fields whenever Schwab succeeds AND that specific field
-    is not `None` — per-field independently, falling back to yfinance's
-    value for any field Schwab didn't provide. Schwab failing entirely (any
-    exception) degrades gracefully to a snapshot identical to plain
-    yfinance fundamentals."""
+    `share_dilution_5y`, `years_available`, `ticker`, `as_of`, and now also
+    `interest_coverage`), while `gross_margin`/`net_margin` are taken from
+    Schwab's real TTM quote fields whenever Schwab succeeds AND that
+    specific field is not `None` — per-field independently, falling back to
+    yfinance's value for any field Schwab didn't provide. Schwab failing
+    entirely (any exception) degrades gracefully to a snapshot identical to
+    plain yfinance fundamentals.
 
-    _SCHWAB_FIELDS = ("interest_coverage", "gross_margin", "net_margin")
+    `interest_coverage` is deliberately excluded from `_SCHWAB_FIELDS`: live
+    testing found Schwab's `interestCoverage` returned exactly `0.0` for
+    both AAPL and MSFT, which isn't plausible for either company and looks
+    like a systematic Schwab data artifact rather than real data. Because
+    the merge rule below only checks `value is not None`, a bogus-but-non-
+    None `0.0` would otherwise silently override yfinance's real value —
+    and since the quality gate's `min_interest_coverage` threshold is well
+    above zero, that would incorrectly fail tickers on this metric alone.
+    yfinance's `interest_coverage` is used unconditionally instead."""
+
+    _SCHWAB_FIELDS = ("gross_margin", "net_margin")
 
     def __init__(
         self, schwab: SchwabFundamentalsProvider, yfinance: FundamentalsProvider
@@ -363,17 +373,21 @@ def build_fundamentals_provider(
 ) -> FundamentalsProvider | _MergedFundamentalsProvider:
     """Revised design (supersedes the earlier "always plain yfinance"
     decision, now that the real Schwab OpenAPI schema confirms Schwab's
-    `fundamental` section carries real TTM values for 3 of the 6
-    quality-gate metrics — interest_coverage/gross_margin/net_margin — via
-    `interestCoverage`/`grossMarginTTM`/`netProfitMarginTTM`).
+    `fundamental` section carries real TTM values for 2 of the 6
+    quality-gate metrics — gross_margin/net_margin — via
+    `grossMarginTTM`/`netProfitMarginTTM`). Schwab's `fundamental` section
+    does also return an `interestCoverage` value, but it's intentionally
+    excluded from the merge — see `_MergedFundamentalsProvider`'s docstring
+    for why (Schwab returned exactly `0.0` for both AAPL and MSFT in live
+    testing).
 
     - settings.data_provider != 'schwab': unchanged, returns the plain
       yfinance-backed `FundamentalsProvider`.
     - settings.data_provider == 'schwab': returns a `_MergedFundamentalsProvider`
-      that layers Schwab's 3 real TTM fields on top of a full yfinance
-      snapshot (which remains the source of truth for the other 3
-      structurally-Schwab-impossible metrics and for years_available). The
-      internal `SchwabFundamentalsProvider` is built with a private
+      that layers Schwab's 2 real TTM fields on top of a full yfinance
+      snapshot (which remains the source of truth for the other 4 metrics,
+      including interest_coverage, and for years_available). The internal
+      `SchwabFundamentalsProvider` is built with a private
       `_NoOpFundamentalsCache` (see that class's docstring) rather than the
       shared `cache`, so its partial snapshot never clobbers the shared
       cache table."""

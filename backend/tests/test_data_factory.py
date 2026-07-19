@@ -364,7 +364,11 @@ def _snapshot(**overrides) -> FundamentalsSnapshot:
     return FundamentalsSnapshot(**defaults)
 
 
-async def test_merged_fundamentals_all_three_schwab_fields_populated():
+async def test_merged_fundamentals_gross_and_net_margin_schwab_fields_populated():
+    """interest_coverage is intentionally NOT in `_SCHWAB_FIELDS` (live
+    testing found Schwab returns exactly 0.0 for both AAPL and MSFT — see
+    `_MergedFundamentalsProvider`'s docstring), so it must always fall
+    straight through from yfinance regardless of what Schwab returns."""
     yfinance_snapshot = _snapshot()
     schwab_snapshot = _snapshot(
         interest_coverage=99.0,
@@ -384,10 +388,12 @@ async def test_merged_fundamentals_all_three_schwab_fields_populated():
     merged = _MergedFundamentalsProvider(mock_schwab, mock_yfinance)
     result = await merged.get_fundamentals("AAPL")
 
-    assert result.interest_coverage == 99.0
     assert result.gross_margin == 0.55
     assert result.net_margin == 0.33
-    # yfinance remains the source of truth for these:
+    # yfinance remains the source of truth for these, including
+    # interest_coverage (never merged from Schwab, even though Schwab
+    # returned a non-None 99.0 here):
+    assert result.interest_coverage == yfinance_snapshot.interest_coverage
     assert result.years_available == yfinance_snapshot.years_available
     assert result.fcf_5y_cumulative == yfinance_snapshot.fcf_5y_cumulative
     assert result.ocf_ni_ratio == yfinance_snapshot.ocf_ni_ratio
@@ -416,7 +422,9 @@ async def test_merged_fundamentals_one_schwab_field_none_falls_back_per_field():
     merged = _MergedFundamentalsProvider(mock_schwab, mock_yfinance)
     result = await merged.get_fundamentals("AAPL")
 
-    assert result.interest_coverage == 99.0
+    # interest_coverage is never merged (see _SCHWAB_FIELDS) — always
+    # yfinance's value, regardless of what Schwab returned:
+    assert result.interest_coverage == 10.0
     assert result.gross_margin == 0.4  # fell back to yfinance
     assert result.net_margin == 0.33
 
