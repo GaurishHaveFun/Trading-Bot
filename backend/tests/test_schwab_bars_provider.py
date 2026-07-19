@@ -59,7 +59,7 @@ def cache(tmp_path):
 @pytest.fixture
 def mock_client():
     client = MagicMock()
-    client.get = AsyncMock(return_value={"candles": []})
+    client.call = AsyncMock(return_value={"candles": []})
     return client
 
 
@@ -74,7 +74,7 @@ def provider(mock_client, cache):
 
 
 async def test_candles_convert_to_bars_with_correct_utc_values(provider, mock_client):
-    mock_client.get.return_value = _make_payload([1, 2, 3])
+    mock_client.call.return_value = _make_payload([1, 2, 3])
     bars = await provider.get_bars("AAPL", START, END)
 
     assert len(bars) == 3
@@ -90,7 +90,7 @@ async def test_candle_with_none_field_is_dropped(provider, mock_client):
     good = _make_candle(1)
     bad = _make_candle(2)
     bad["close"] = None
-    mock_client.get.return_value = {"candles": [good, bad]}
+    mock_client.call.return_value = {"candles": [good, bad]}
 
     bars = await provider.get_bars("AAPL", START, END)
 
@@ -102,7 +102,7 @@ async def test_candle_with_nan_field_is_dropped(provider, mock_client):
     good = _make_candle(1)
     bad = _make_candle(2)
     bad["high"] = float("nan")
-    mock_client.get.return_value = {"candles": [good, bad]}
+    mock_client.call.return_value = {"candles": [good, bad]}
 
     bars = await provider.get_bars("AAPL", START, END)
 
@@ -111,9 +111,39 @@ async def test_candle_with_nan_field_is_dropped(provider, mock_client):
 
 
 async def test_missing_candles_key_returns_empty(provider, mock_client):
-    mock_client.get.return_value = {}
+    mock_client.call.return_value = {}
     bars = await provider.get_bars("AAPL", START, END)
     assert bars == []
+
+
+# ---------------------------------------------------------------------------
+# Typed call wiring (client.call + AsyncClient.get_price_history, not the
+# legacy raw-path client.get)
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_uses_typed_get_price_history_via_call(provider, mock_client):
+    mock_client.call.return_value = {"candles": []}
+
+    await provider.get_bars("AAPL", START, END)
+
+    mock_client.call.assert_called_once()
+    request_fn = mock_client.call.call_args.args[0]
+    assert mock_client.call.call_args.kwargs.get("label") == "get_price_history"
+
+    # Invoke the deferred request_fn to verify it calls the schwab-py typed
+    # method with the expected symbol/date range/enums — guards against a
+    # regression back to the legacy raw-path `client.get()`.
+    request_fn()
+    mock_client.raw.get_price_history.assert_called_once_with(
+        "AAPL",
+        period_type=mock_client.raw.PriceHistory.PeriodType.YEAR,
+        frequency_type=mock_client.raw.PriceHistory.FrequencyType.DAILY,
+        frequency=mock_client.raw.PriceHistory.Frequency.EVERY_MINUTE,
+        start_datetime=START,
+        end_datetime=END,
+        need_extended_hours_data=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +152,7 @@ async def test_missing_candles_key_returns_empty(provider, mock_client):
 
 
 async def test_fetches_and_caches_when_empty(provider, mock_client, cache):
-    mock_client.get.return_value = _make_payload([1, 2, 3, 4, 5])
+    mock_client.call.return_value = _make_payload([1, 2, 3, 4, 5])
 
     bars = await provider.get_bars("AAPL", START, END)
     assert len(bars) == 5
@@ -137,12 +167,12 @@ async def test_returns_from_cache_without_fetching(provider, mock_client, cache)
 
     bars = await provider.get_bars("AAPL", START, END)
 
-    mock_client.get.assert_not_called()
+    mock_client.call.assert_not_called()
     assert len(bars) == 10
 
 
 async def test_empty_response_returns_empty_list(provider, mock_client):
-    mock_client.get.return_value = {"candles": []}
+    mock_client.call.return_value = {"candles": []}
     bars = await provider.get_bars("AAPL", START, END)
     assert bars == []
 
@@ -175,7 +205,7 @@ async def test_refreshes_stale_today_bar(provider, mock_client, cache):
     bars_in = [_make_bar(d) for d in range(10, 15)] + [_make_bar(15, close=100.0)]
     cache.put("AAPL", bars_in)
 
-    mock_client.get.return_value = {"candles": [_make_candle(15, close=124.0)]}
+    mock_client.call.return_value = {"candles": [_make_candle(15, close=124.0)]}
 
     with patch("screener.data.schwab.bars_provider.datetime", _make_fixed_datetime(fake_today)):
         bars = await provider.get_bars(
@@ -184,7 +214,7 @@ async def test_refreshes_stale_today_bar(provider, mock_client, cache):
             datetime(2024, 1, 15, tzinfo=timezone.utc),
         )
 
-    mock_client.get.assert_called_once()
+    mock_client.call.assert_called_once()
     today_bars = [b for b in bars if b.timestamp.date() == fake_today.date()]
     assert len(today_bars) == 1
     assert today_bars[0].close == pytest.approx(124.0)
@@ -209,7 +239,7 @@ async def test_historical_range_does_not_trigger_refresh_fetch(provider, mock_cl
     with patch("screener.data.schwab.bars_provider.datetime", _make_fixed_datetime(fake_today)):
         bars = await provider.get_bars("AAPL", START, END)
 
-    mock_client.get.assert_not_called()
+    mock_client.call.assert_not_called()
     assert len(bars) == 10
 
 

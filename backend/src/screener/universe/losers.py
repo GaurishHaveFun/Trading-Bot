@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 
 _MIN_MARKET_CAP = 10_000_000_000  # $10B cap floor — drop penny/small-cap losers
 _SCREEN_COUNT = 50
-_TOP_N = 15
+_TOP_N = 20
 
 
 class LosersUniverse(UniverseProvider):
@@ -23,7 +23,7 @@ class LosersUniverse(UniverseProvider):
         self._quotes: dict[str, dict] = {}
 
     async def get_symbols(self) -> list[str]:
-        """Top-15 (by % loss) large-cap equity losers, unioned with watchlist
+        """Top-20 (by % loss) large-cap equity losers, unioned with watchlist
         symbols currently down today. Also stashes quote metadata for
         `get_quotes()`, fetched once per call."""
         raw_quotes = self._fetch_losers()
@@ -68,7 +68,7 @@ class LosersUniverse(UniverseProvider):
 
     def _filter_and_rank(self, quotes: list[dict]) -> list[dict]:
         """Drop non-EQUITY and sub-$10B market cap names, then take the top
-        15 by % loss (most negative regularMarketChangePercent first)."""
+        20 by % loss (most negative regularMarketChangePercent first)."""
         filtered = [
             q
             for q in quotes

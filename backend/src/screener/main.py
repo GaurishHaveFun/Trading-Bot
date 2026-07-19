@@ -32,10 +32,26 @@ _LOOKBACK_DAYS = 375  # ~250 trading days
 _CONCURRENCY = 10
 
 
-async def run_screener() -> ScreenerRun:
-    """Full pipeline: universe → fetch → evaluate → output."""
+async def run_screener(*, check_market_hours: bool = False) -> ScreenerRun | None:
+    """Full pipeline: universe → fetch → evaluate → output.
+
+    `check_market_hours` gates this run on the equity market actually being
+    open today (weekend/holiday skip). It is only ever set `True` by the
+    cron scheduler (`screener.scheduler`) — manual invocations (`--once`,
+    `--ticker`) always leave it at the default `False` so they run
+    unconditionally. The actual open/closed determination lives in
+    `screener.data.schwab.market_hours.is_equity_market_open`; this is just
+    the one-line orchestration call to it.
+    """
     settings = get_settings()
     configure_logging(settings.log_level)
+
+    if check_market_hours:
+        from screener.data.schwab.market_hours import is_equity_market_open
+
+        if not await is_equity_market_open(settings):
+            logger.info("market_closed_skip_run")
+            return None
 
     rules_config = load_rules_config(_RULES_PATH)
     quality_screen_config = load_quality_screen_config(_QUALITY_SCREEN_PATH)

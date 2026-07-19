@@ -30,7 +30,7 @@ def _quote_entry(
 
 def _client(side_effect: list) -> MagicMock:
     client = MagicMock()
-    client.get = AsyncMock(side_effect=side_effect)
+    client.call = AsyncMock(side_effect=side_effect)
     return client
 
 
@@ -69,11 +69,11 @@ async def test_drops_non_equity_quote_types():
     assert "SOMEETF" not in symbols
 
 
-# --- top-15 cap ---
+# --- top-20 cap ---
 
 
-async def test_top_15_cap_enforced():
-    symbols_in = [f"SYM{i}" for i in range(20)]
+async def test_top_20_cap_enforced():
+    symbols_in = [f"SYM{i}" for i in range(25)]
     movers = _movers_payload(symbols_in)
     quotes = {s: _quote_entry(-(i + 1.0)) for i, s in enumerate(symbols_in)}
     client = _client([movers, quotes])
@@ -81,12 +81,12 @@ async def test_top_15_cap_enforced():
 
     symbols = await u.get_symbols()
 
-    assert len(symbols) == 15
-    expected_top15 = {f"SYM{i}" for i in range(5, 20)}
-    assert set(symbols) == expected_top15
+    assert len(symbols) == 20
+    expected_top20 = {f"SYM{i}" for i in range(5, 25)}
+    assert set(symbols) == expected_top20
 
 
-async def test_fewer_than_15_qualifying_losers_returns_all():
+async def test_fewer_than_20_qualifying_losers_returns_all():
     symbols_in = [f"SYM{i}" for i in range(5)]
     movers = _movers_payload(symbols_in)
     quotes = {s: _quote_entry(-(i + 1.0)) for i, s in enumerate(symbols_in)}
@@ -157,7 +157,7 @@ async def test_get_quotes_shape():
 
 async def test_get_quotes_empty_before_get_symbols_called():
     client = MagicMock()
-    client.get = AsyncMock()
+    client.call = AsyncMock()
     u = SchwabLosersUniverse(client=client, watchlist=set())
 
     result = await u.get_quotes()
@@ -231,7 +231,7 @@ async def test_quote_for_includes_industry_when_present():
 
 async def test_quote_for_returns_none_on_fetch_error():
     client = MagicMock()
-    client.get = AsyncMock(side_effect=RuntimeError("boom"))
+    client.call = AsyncMock(side_effect=RuntimeError("boom"))
     u = SchwabLosersUniverse(client=client, watchlist=set())
 
     meta = await u.quote_for("BADSYM")
@@ -244,7 +244,7 @@ async def test_quote_for_returns_none_on_fetch_error():
 
 async def test_movers_error_returns_empty_symbols_list():
     client = MagicMock()
-    client.get = AsyncMock(side_effect=RuntimeError("network down"))
+    client.call = AsyncMock(side_effect=RuntimeError("network down"))
     u = SchwabLosersUniverse(client=client, watchlist=set())
 
     symbols = await u.get_symbols()
@@ -264,9 +264,77 @@ async def test_movers_non_dict_result_treated_as_empty():
 async def test_quotes_batch_error_after_movers_success_yields_no_candidates():
     movers = _movers_payload(["BIGCO"])
     client = MagicMock()
-    client.get = AsyncMock(side_effect=[movers, RuntimeError("quotes down")])
+    client.call = AsyncMock(side_effect=[movers, RuntimeError("quotes down")])
     u = SchwabLosersUniverse(client=client, watchlist=set())
 
     symbols = await u.get_symbols()
 
     assert symbols == []
+
+
+# --- typed schwab-py method wiring (confirmed enums from the installed
+# schwab-py package; `client.call`'s real implementation awaits the passed
+# `request_fn`, so these tests invoke it themselves via a fake `client.call`
+# to verify the exact args/enums `_fetch_movers`/`_fetch_quotes_batch` build,
+# rather than the `_client()` helper above which never invokes `request_fn`
+# at all) ---
+
+
+async def test_fetch_movers_uses_typed_get_movers_with_confirmed_enums():
+    from schwab.client.base import BaseClient
+
+    captured: dict = {}
+
+    class FakeRaw:
+        Movers = BaseClient.Movers
+
+        def get_movers(self, index, *, sort_order=None, frequency=None):
+            captured["index"] = index
+            captured["sort_order"] = sort_order
+            captured["frequency"] = frequency
+            return {"screeners": []}
+
+    async def fake_call(request_fn, *, label="typed_call"):
+        return request_fn()
+
+    client = MagicMock()
+    client.raw = FakeRaw()
+    client.call = fake_call
+    u = SchwabLosersUniverse(client=client, watchlist=set())
+
+    await u._fetch_movers()
+
+    assert captured["index"] == BaseClient.Movers.Index.SPX
+    assert captured["sort_order"] == BaseClient.Movers.SortOrder.PERCENT_CHANGE_DOWN
+    assert captured["frequency"] == BaseClient.Movers.Frequency.ZERO
+
+
+async def test_fetch_quotes_batch_uses_typed_get_quotes_with_confirmed_fields():
+    from schwab.client.base import BaseClient
+
+    captured: dict = {}
+
+    class FakeRaw:
+        Quote = BaseClient.Quote
+
+        def get_quotes(self, symbols, *, fields=None):
+            captured["symbols"] = symbols
+            captured["fields"] = fields
+            return {}
+
+    async def fake_call(request_fn, *, label="typed_call"):
+        return request_fn()
+
+    client = MagicMock()
+    client.raw = FakeRaw()
+    client.call = fake_call
+    u = SchwabLosersUniverse(client=client, watchlist=set())
+
+    await u._fetch_quotes_batch(["AAPL", "MSFT"])
+
+    assert captured["symbols"] == ["AAPL", "MSFT"]
+    assert captured["fields"] == [
+        BaseClient.Quote.Fields.FUNDAMENTAL,
+        BaseClient.Quote.Fields.QUOTE,
+        BaseClient.Quote.Fields.REFERENCE,
+    ]

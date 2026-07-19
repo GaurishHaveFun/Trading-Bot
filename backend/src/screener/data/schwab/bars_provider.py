@@ -6,6 +6,28 @@ cache-check / head-backfill / tail-backfill / same-day-refresh control flow
 cache hit otherwise pins a stale pre-close price for the rest of the day),
 swapping the underlying fetch mechanism from yfinance to the Schwab
 price-history endpoint via `SchwabClient`.
+
+`_fetch()` goes through `SchwabClient.call()` with schwab-py's typed
+`AsyncClient.get_price_history()` rather than the legacy raw-path `get()`.
+Two schwab-py enum quirks to note for future readers:
+
+  - `enforce_enums` defaults to `True` on the `AsyncClient` schwab-py builds
+    for us (via `client_from_token_file` in `auth.py`, which doesn't
+    override the default) — so `frequency`/`period_type`/`frequency_type`
+    MUST be passed as schwab-py enum members, not raw ints/strs, or
+    `convert_enum` raises.
+  - schwab-py's `PriceHistory.Frequency` enum only has minute-based members
+    (`EVERY_MINUTE = 1`, `EVERY_FIVE_MINUTES = 5`, ...) — there is no
+    "daily" member. schwab-py's own bundled convenience wrapper,
+    `BaseClient.get_price_history_every_day()`, resolves this by passing
+    `frequency=PriceHistory.Frequency.EVERY_MINUTE` (value `1`) alongside
+    `frequency_type=PriceHistory.FrequencyType.DAILY` — confirmed by reading
+    that method's source in the installed package
+    (`.venv/lib/python3.12/site-packages/schwab/client/base.py`). We follow
+    the same pattern here rather than calling that convenience wrapper
+    directly, since it hardcodes `period=Period.TWENTY_YEARS` and defaults
+    `start_datetime`/`end_datetime` to `None`, whereas we need explicit
+    start/end control for cache head/tail backfills.
 """
 from __future__ import annotations
 
@@ -19,14 +41,6 @@ from screener.models import Bar
 from screener.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-_PRICE_HISTORY_PATH = "/marketdata/v1/pricehistory"
-
-
-def _to_epoch_millis(dt: datetime) -> int:
-    """Convert a UTC-ish datetime to epoch milliseconds, as required by
-    Schwab's price-history `startDate`/`endDate` query params."""
-    return int(dt.astimezone(timezone.utc).timestamp() * 1000)
 
 
 def _is_missing_or_nan(value: object) -> bool:
@@ -105,29 +119,36 @@ class SchwabProvider(DataProvider):
 
         logger.info("fetching_bars", symbol=symbol, start=str(start.date()), end=str(end.date()))
 
-        params = {
-            "symbol": symbol,
-            # NOTE (originally UNVERIFIED, now CONFIRMED against the real
-            # Schwab OpenAPI spec pasted in from developer.schwab.com): this
-            # query-param shape — periodType/frequencyType/frequency
-            # alongside explicit startDate/endDate, plus
-            # needExtendedHoursData — is CONFIRMED CORRECT. periodType="year"
-            # allows frequencyType of daily/weekly/monthly, and
-            # frequencyType="daily" requires frequency=1, exactly as used
-            # below. The response shape is likewise CONFIRMED CORRECT: a
-            # CandleList with top-level candles/empty/previousClose/
-            # previousCloseDate/previousCloseDateISO8601/symbol, where each
-            # Candle has open/high/low/close/datetime (epoch ms)/
-            # datetimeISO8601/volume — exactly what `_candles_to_bars` below
-            # already reads.
-            "periodType": "year",
-            "frequencyType": "daily",
-            "frequency": 1,
-            "startDate": _to_epoch_millis(start),
-            "endDate": _to_epoch_millis(end),
-            "needExtendedHoursData": False,
-        }
-        payload = await self._client.get(_PRICE_HISTORY_PATH, params)
+        # NOTE (originally UNVERIFIED, now CONFIRMED against the real Schwab
+        # OpenAPI spec pasted in from developer.schwab.com): this
+        # periodType/frequencyType/frequency + explicit startDate/endDate +
+        # needExtendedHoursData shape is CONFIRMED CORRECT. periodType="year"
+        # allows frequencyType of daily/weekly/monthly, and
+        # frequencyType="daily" requires frequency=1. See the module
+        # docstring for why frequency=1 is expressed as schwab-py's
+        # `PriceHistory.Frequency.EVERY_MINUTE` enum member below (its value
+        # is `1`; `enforce_enums=True` rejects a raw int). The response
+        # shape is likewise CONFIRMED CORRECT: a CandleList with top-level
+        # candles/empty/previousClose/previousCloseDate/
+        # previousCloseDateISO8601/symbol, where each Candle has open/high/
+        # low/close/datetime (epoch ms)/datetimeISO8601/volume — exactly
+        # what `_candles_to_bars` below already reads. schwab-py's
+        # `get_price_history` converts `start_datetime`/`end_datetime` to
+        # epoch millis internally, so `start`/`end` are passed through
+        # as-is.
+        price_history = self._client.raw.PriceHistory
+        payload = await self._client.call(
+            lambda: self._client.raw.get_price_history(
+                symbol,
+                period_type=price_history.PeriodType.YEAR,
+                frequency_type=price_history.FrequencyType.DAILY,
+                frequency=price_history.Frequency.EVERY_MINUTE,
+                start_datetime=start,
+                end_datetime=end,
+                need_extended_hours_data=False,
+            ),
+            label="get_price_history",
+        )
         return self._candles_to_bars(payload)
 
     def _candles_to_bars(self, payload: dict) -> list[Bar]:

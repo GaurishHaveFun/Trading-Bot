@@ -60,21 +60,21 @@ async def test_drops_non_equity_quote_types():
     assert "SOMEETF" not in symbols
 
 
-# --- top-15 cap ---
+# --- top-20 cap ---
 
-async def test_top_15_cap_enforced():
-    # 20 qualifying losers, ranked by % loss (most negative first)
-    quotes = [_quote(f"SYM{i}", change_pct=-(i + 1.0)) for i in range(20)]
+async def test_top_20_cap_enforced():
+    # 25 qualifying losers, ranked by % loss (most negative first)
+    quotes = [_quote(f"SYM{i}", change_pct=-(i + 1.0)) for i in range(25)]
     with patch("screener.universe.losers.yf.screen", return_value=_screen_result(quotes)):
         u = LosersUniverse(watchlist=set())
         symbols = await u.get_symbols()
-    assert len(symbols) == 15
-    # The most negative (largest loss) symbols should be SYM19..SYM5 (top 15 by loss)
-    expected_top15 = {f"SYM{i}" for i in range(5, 20)}
-    assert set(symbols) == expected_top15
+    assert len(symbols) == 20
+    # The most negative (largest loss) symbols should be SYM24..SYM5 (top 20 by loss)
+    expected_top20 = {f"SYM{i}" for i in range(5, 25)}
+    assert set(symbols) == expected_top20
 
 
-async def test_fewer_than_15_qualifying_losers_returns_all():
+async def test_fewer_than_20_qualifying_losers_returns_all():
     quotes = [_quote(f"SYM{i}", change_pct=-(i + 1.0)) for i in range(5)]
     with patch("screener.universe.losers.yf.screen", return_value=_screen_result(quotes)):
         u = LosersUniverse(watchlist=set())

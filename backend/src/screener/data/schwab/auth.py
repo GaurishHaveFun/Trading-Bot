@@ -1,161 +1,100 @@
-"""Schwab Trader API OAuth authentication (Milestone 1: config + auth foundation only).
+"""Schwab Trader API OAuth authentication, built on the `schwab-py` library
+(https://github.com/alexgolec/schwab-py, PyPI `schwab-py`, import `schwab`)
+rather than a hand-rolled OAuth implementation. `schwab-py` already
+implements the self-signed-certificate loopback server needed to catch
+Schwab's HTTPS redirect during the interactive browser flow (Schwab requires
+an `https://` callback URL even for local loopback), so none of that plumbing
+needs to be reimplemented here anymore — this module is now a thin wrapper
+around two of `schwab.auth`'s entry points:
 
-This module implements Schwab's 3-legged OAuth flow:
   1. `authorize()` — a one-time, interactive, sync CLI flow (invoked via
-     `--auth-schwab`, never from an async request path): opens the user's
-     browser at Schwab's authorize URL, stands up a temporary local loopback
-     server to capture the redirect's `code` query param, exchanges that code
-     for an access/refresh token pair, and persists them to `token_path`.
-  2. `get_access_token()` — returns a valid access token for use by later
-     milestones' API clients, transparently refreshing it when it is close to
-     expiry, using the (up to 7-day-lived) refresh token.
+     `--auth-schwab`, never from an async request path). Calls
+     `schwab.auth.client_from_login_flow()` directly (deliberately NOT the
+     more convenient `schwab.auth.easy_client()` — see `authorize()`'s
+     docstring for why) to force a fresh interactive re-authorization every
+     time it's invoked, persisting the resulting token to `token_path`.
+  2. `get_client()` — returns a live, ready-to-use
+     `schwab.client.asynchronous.AsyncClient` for runtime (headless,
+     `--once`/scheduler) use, by loading the existing token file via
+     `schwab.auth.client_from_token_file()`. This NEVER opens a browser or
+     blocks on user input — if `token_path` doesn't exist yet, or its
+     contents can't be loaded as a valid token, this raises
+     `SchwabAuthExpired` for the caller (and, in later milestones, the
+     provider-factory fallback logic) to handle.
 
-Schwab access tokens last 30 minutes; refresh tokens last 7 days. Once the
-refresh token itself expires, Schwab requires a fresh interactive browser
-re-authorization — there is no programmatic way around this restriction, so
-`get_access_token()` surfaces that condition as `SchwabAuthExpired` for the
-caller (and, in later milestones, fallback logic) to handle.
+CONFIRMED (by reading the actually-installed schwab-py source in this
+project's `.venv/lib/python3.12/site-packages/schwab/auth.py`, and authlib's
+`AsyncOAuth2Client` in
+`.venv/lib/python3.12/site-packages/authlib/integrations/httpx_client/oauth2_client.py`
+— re-verify against whatever version `uv add schwab-py` installs if it
+differs from schwab-py==1.5.1 / authlib==1.7.2):
+  - Both `client_from_login_flow` and `client_from_token_file` return a
+    `schwab.client.asynchronous.AsyncClient` when `asyncio=True`, wrapping an
+    `authlib.integrations.httpx_client.AsyncOAuth2Client` session.
+  - `client_from_login_flow` only accepts callback URLs whose host is
+    literally `127.0.0.1` (raises `ValueError` otherwise) — matches this
+    codebase's `schwab_callback_url` default of `https://127.0.0.1:8182`.
+  - That authlib session's `request()` method calls `ensure_active_token()`
+    before *every* outgoing request, which proactively refreshes the access
+    token (using the stored refresh token) whenever it's within `leeway`
+    (300s, set by schwab-py in `client_from_access_functions`) of expiry —
+    and rewrites `token_path` on every refresh via the `update_token`
+    callback schwab-py wires up. This means access-token refresh is now
+    fully automatic at the transport level; nothing in this codebase needs
+    to track `expires_at` or hit the refresh endpoint by hand anymore (this
+    module used to do exactly that — see git history for the prior
+    hand-rolled `get_access_token()`).
+  - `client_from_token_file` (and the `client_from_access_functions` it
+    delegates to) read the token file eagerly and let whatever exception
+    that raises (`FileNotFoundError`, `json.JSONDecodeError`, etc.)
+    propagate — `get_client()` below catches that and re-raises as
+    `SchwabAuthExpired`, matching this module's previous behavior of
+    treating "no usable token on disk" as one uniform condition.
+  - schwab-py's session does NOT retry on HTTP 429 (confirmed absent from
+    both schwab-py's and authlib's source) — Schwab's documented rate limit
+    still applies, which is why `client.py`'s `_RateLimiter` and bounded
+    429-retry are preserved unchanged in that module.
 
-HTTPS loopback callback:
-Schwab requires the registered callback URL to use `https://`. To satisfy
-that, `authorize()` generates a throwaway self-signed X.509 certificate (via
-the `cryptography` package) at runtime and terminates TLS directly in the
-loopback server, purely so the local redirect target is reachable over
-HTTPS. Because the cert is self-signed and not from a trusted CA, the
-browser will show a one-time "your connection is not private / not secure"
-warning on the redirect — the user must click through it to proceed. This is
-expected/normal for a local-loopback OAuth dev flow, not a bug.
+UNVERIFIED (no live Schwab credentials available this session — would
+require them to exercise): the actual shape/success of a real browser OAuth
+round-trip, and what a real dead (7-day-expired) refresh token's failure
+mode looks like in practice when authlib's `ensure_active_token()` attempts
+to use it mid-request.
 """
 from __future__ import annotations
 
-import ipaddress
-import json
-import os
-import ssl
-import tempfile
-import webbrowser
-from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse
 
-import httpx
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
+import schwab.auth
+from schwab.client.asynchronous import AsyncClient
 
 from screener.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-_AUTHORIZE_URL = "https://api.schwabapi.com/v1/oauth/authorize"
-_TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token"
-_EXPIRY_BUFFER_SECONDS = 60
-_HTTP_TIMEOUT_SECONDS = 30.0
-
 
 class SchwabAuthExpired(Exception):
-    """Raised when there is no valid way to obtain a Schwab access token
-    without interactive re-authorization: either no token file exists yet
-    (never authorized via `--auth-schwab`), or the stored refresh token was
-    rejected by Schwab's token endpoint (the 7-day refresh token has died).
-    Callers (including later fallback-provider logic) should catch this one
-    exception type and prompt the user to re-run `--auth-schwab`.
+    """Raised when there is no valid way to obtain a Schwab-authenticated
+    client without interactive re-authorization: either no token file exists
+    yet (never authorized via `--auth-schwab`), or the stored token file
+    exists but can't be loaded as a valid token (corrupt/unreadable JSON).
+    Callers (including the fallback-provider logic in `screener.data.factory`,
+    which already catches broad `Exception`) should treat this as "re-run
+    --auth-schwab".
+
+    A *live* refresh-token rejection from Schwab (the 7-day refresh token
+    has actually died server-side) is a different case: that's now handled
+    internally by schwab-py/authlib at request time (see the module
+    docstring's CONFIRMED notes on `ensure_active_token()`), and is NOT
+    wrapped into `SchwabAuthExpired` here — it will surface as whatever
+    exception authlib raises from inside a request, which callers' existing
+    broad `except Exception` fallback handling already covers.
     """
-
-
-def _generate_self_signed_cert(host: str) -> tuple[str, str]:
-    """Generate a throwaway self-signed X.509 certificate + private key,
-    valid for the given loopback `host`, and write them to temporary PEM
-    files (since `ssl.SSLContext.load_cert_chain` requires file paths).
-
-    The cert's SANs always include both "127.0.0.1" and "localhost" (for
-    robustness across however the callback URL happens to be configured),
-    plus the actual parsed `host` if it differs from those.
-
-    Returns the (certfile_path, keyfile_path) tuple. Callers are responsible
-    for deleting these temporary files once the server that loaded them has
-    closed.
-    """
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-    subject = issuer = x509.Name(
-        [x509.NameAttribute(NameOID.COMMON_NAME, host)]
-    )
-
-    san_hosts = {"127.0.0.1", "localhost", host}
-    san_entries = [x509.DNSName(h) for h in san_hosts]
-    try:
-        san_entries.append(x509.IPAddress(ipaddress.ip_address(host)))
-    except ValueError:
-        pass  # host isn't a literal IP address (e.g. "localhost") — DNSName covers it
-
-    now = datetime.now(timezone.utc)
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(issuer)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - timedelta(minutes=5))
-        .not_valid_after(now + timedelta(days=1))
-        .add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
-        .sign(key, hashes.SHA256())
-    )
-
-    tmp_dir = tempfile.mkdtemp(prefix="schwab_selfsigned_")
-    certfile = os.path.join(tmp_dir, "cert.pem")
-    keyfile = os.path.join(tmp_dir, "key.pem")
-
-    with open(certfile, "wb") as f:
-        f.write(cert.public_bytes(serialization.Encoding.PEM))
-    with open(keyfile, "wb") as f:
-        f.write(
-            key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption(),
-            )
-        )
-
-    return certfile, keyfile
-
-
-class _CallbackHandler(BaseHTTPRequestHandler):
-    """Captures the `code` (or `error`) query param from Schwab's OAuth
-    redirect, then responds with a short human-readable HTML page. The
-    HTTPServer instance stores the captured values as `auth_code`/`auth_error`
-    attributes so `authorize()` can read them after `handle_request()`
-    returns."""
-
-    def do_GET(self) -> None:  # noqa: N802 (stdlib method name)
-        parsed = urlparse(self.path)
-        params = parse_qs(parsed.query)
-        code = params.get("code", [None])[0]
-        error = params.get("error", [None])[0]
-        self.server.auth_code = code  # type: ignore[attr-defined]
-        self.server.auth_error = error  # type: ignore[attr-defined]
-
-        self.send_response(200)
-        self.send_header("Content-type", "text/html")
-        self.end_headers()
-        if code:
-            body = b"<html><body>Schwab authorization complete. You may close this window.</body></html>"
-        else:
-            body = b"<html><body>Schwab authorization failed. You may close this window.</body></html>"
-        self.wfile.write(body)
-
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
-        """Suppress BaseHTTPRequestHandler's default stderr access logging —
-        this codebase logs via structlog only, never bare stdout/stderr
-        writes from library code."""
-        return
 
 
 class SchwabAuth:
-    """Handles the Schwab 3-legged OAuth flow: one-time interactive
-    authorization plus ongoing access-token refresh."""
+    """Thin wrapper around `schwab.auth`'s client-construction entry points.
+    See the module docstring for the full design rationale."""
 
     def __init__(
         self,
@@ -170,83 +109,48 @@ class SchwabAuth:
         self._token_path = Path(token_path)
 
     def authorize(self) -> None:
-        """One-time interactive OAuth flow: open the browser at Schwab's
-        authorize URL, capture the redirect's `code` via a temporary local
-        loopback server, exchange it for tokens, and persist them.
+        """One-time interactive OAuth flow: delegates entirely to
+        `schwab.auth.client_from_login_flow`, which opens the user's browser
+        at Schwab's authorize URL, stands up its own temporary self-signed-
+        cert loopback server to capture the redirect, exchanges the code for
+        a token, and persists it to `token_path` — overwriting any existing
+        token file there.
 
-        This is a deliberate synchronous, blocking, interactive CLI flow —
-        not called from any async request path — so a sync `httpx.Client`
-        and a blocking `HTTPServer.handle_request()` call are correct here.
-
-        See the module docstring for why the browser shows a one-time
-        self-signed-certificate warning during this flow.
+        Deliberately calls `client_from_login_flow` directly rather than the
+        more convenient `schwab.auth.easy_client`: `easy_client` silently
+        returns a client built from the EXISTING token file when one is
+        already present at `token_path`, skipping the interactive flow
+        entirely. That's exactly the right behavior for routine runtime
+        client construction (which is what `get_client()` below does via
+        `client_from_token_file` directly), but wrong for an explicit
+        `--auth-schwab` command, whose entire purpose is to force a fresh
+        interactive re-authorization on demand — a user who runs
+        `--auth-schwab` expects a browser to open, not a silent no-op
+        because a (possibly stale) token file happens to already exist.
         """
-        auth_url = f"{_AUTHORIZE_URL}?{urlencode({'client_id': self._app_key, 'redirect_uri': self._callback_url})}"
-
-        parsed_cb = urlparse(self._callback_url)
-        host = parsed_cb.hostname or "127.0.0.1"
-        port = parsed_cb.port or (443 if parsed_cb.scheme == "https" else 80)
-
-        server = HTTPServer((host, port), _CallbackHandler)
-        server.auth_code = None  # type: ignore[attr-defined]
-        server.auth_error = None  # type: ignore[attr-defined]
-
-        certfile, keyfile = _generate_self_signed_cert(host)
-        logger.info("schwab_authorize_selfsigned_cert_generated", callback_host=host)
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(certfile, keyfile)
-        server.socket = context.wrap_socket(server.socket, server_side=True)
-
-        logger.info("schwab_authorize_start", callback_host=host, callback_port=port)
-        webbrowser.open(auth_url)
-
-        try:
-            server.handle_request()  # blocks until the single redirect request arrives
-        finally:
-            server.server_close()
-            for path in (certfile, keyfile):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-            try:
-                os.rmdir(os.path.dirname(certfile))
-            except OSError:
-                pass
-
-        code = server.auth_code  # type: ignore[attr-defined]
-        error = server.auth_error  # type: ignore[attr-defined]
-        if not code:
-            logger.warning("schwab_authorize_no_code", error=error)
-            raise SchwabAuthExpired(
-                f"Schwab authorization did not return a code (error={error!r}); "
-                "run --auth-schwab again."
-            )
-
-        logger.info("schwab_authorize_code_received")
-
-        with httpx.Client(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                _TOKEN_URL,
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "redirect_uri": self._callback_url,
-                },
-                auth=(self._app_key, self._app_secret),
-            )
-        response.raise_for_status()
-
-        self._persist_token(response.json())
+        logger.info("schwab_authorize_start", callback_url=self._callback_url)
+        schwab.auth.client_from_login_flow(
+            api_key=self._app_key,
+            app_secret=self._app_secret,
+            callback_url=self._callback_url,
+            token_path=str(self._token_path),
+            asyncio=True,
+        )
         logger.info("schwab_authorize_complete", token_path=str(self._token_path))
 
-    def get_access_token(self) -> str:
-        """Return a valid Schwab access token, refreshing it via the stored
-        refresh token if it is within `_EXPIRY_BUFFER_SECONDS` of expiry (or
-        already expired). Raises `SchwabAuthExpired` if no token file exists
-        yet, or if the refresh attempt is rejected by Schwab (refresh token
-        dead after 7 days) — in either case the caller must re-run
-        `--auth-schwab`.
+    def get_client(self) -> AsyncClient:
+        """Return a live `schwab.client.asynchronous.AsyncClient` for
+        runtime use, loading the existing token from `token_path` via
+        `schwab.auth.client_from_token_file`. NEVER prompts, opens a
+        browser, or blocks on user input — safe to call from headless /
+        scheduled code paths (this is the async-client equivalent of the
+        old hand-rolled `get_access_token()`, but returns a whole configured
+        client rather than a bearer-token string, since schwab-py's client
+        handles token injection/refresh internally).
+
+        Raises `SchwabAuthExpired` if `token_path` doesn't exist yet, or if
+        its contents can't be loaded as a valid token (e.g. corrupt JSON) —
+        in both cases the caller must re-run `--auth-schwab`.
         """
         if not self._token_path.exists():
             logger.warning("schwab_token_missing", token_path=str(self._token_path))
@@ -254,53 +158,20 @@ class SchwabAuth:
                 f"No Schwab token file at {self._token_path} — run --auth-schwab to authorize."
             )
 
-        token_data = json.loads(self._token_path.read_text())
-        expires_at = datetime.fromisoformat(token_data["expires_at"])
-        now = datetime.now(timezone.utc)
-
-        if (expires_at - now).total_seconds() > _EXPIRY_BUFFER_SECONDS:
-            return token_data["access_token"]
-
-        logger.info("schwab_token_refresh_start")
-        with httpx.Client(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                _TOKEN_URL,
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": token_data["refresh_token"],
-                },
-                auth=(self._app_key, self._app_secret),
+        try:
+            return schwab.auth.client_from_token_file(
+                token_path=str(self._token_path),
+                api_key=self._app_key,
+                app_secret=self._app_secret,
+                asyncio=True,
             )
-
-        if response.status_code != 200:
-            logger.warning("schwab_token_refresh_rejected", status_code=response.status_code)
+        except Exception as exc:
+            logger.warning(
+                "schwab_token_load_failed",
+                token_path=str(self._token_path),
+                error=str(exc),
+            )
             raise SchwabAuthExpired(
-                "Schwab refresh token was rejected (likely expired after 7 days) — "
+                f"Could not load Schwab token from {self._token_path} ({exc}) — "
                 "run --auth-schwab to re-authorize."
-            )
-
-        new_token_data = self._persist_token(response.json())
-        logger.info("schwab_token_refresh_complete")
-        return new_token_data["access_token"]
-
-    def _persist_token(self, payload: dict) -> dict:
-        """Write the token payload (access_token/refresh_token/expires_in)
-        to `token_path` as JSON with issued_at/expires_at UTC timestamps,
-        creating parent dirs as needed and locking permissions to 0600.
-        Never logs token contents. Returns the persisted dict."""
-        issued_at = datetime.now(timezone.utc)
-        expires_in = payload.get("expires_in", 1800)
-        expires_at = issued_at + timedelta(seconds=expires_in)
-
-        token_data = {
-            "access_token": payload["access_token"],
-            "refresh_token": payload["refresh_token"],
-            "issued_at": issued_at.isoformat(),
-            "expires_at": expires_at.isoformat(),
-        }
-
-        self._token_path.parent.mkdir(parents=True, exist_ok=True)
-        self._token_path.write_text(json.dumps(token_data))
-        os.chmod(self._token_path, 0o600)
-
-        return token_data
+            ) from exc

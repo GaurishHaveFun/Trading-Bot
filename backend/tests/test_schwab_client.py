@@ -1,11 +1,15 @@
-"""Tests for SchwabClient (Milestone 2: rate-limited HTTP client)."""
+"""Tests for SchwabClient, the rate-limited wrapper around a schwab-py
+`AsyncClient` (see `screener/data/schwab/client.py`'s module docstring for
+the full design rationale, including why 401-handling was deliberately
+dropped in favor of authlib's proactive token refresh).
+"""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
-from screener.data.schwab.auth import SchwabAuthExpired
 from screener.data.schwab.client import SchwabAPIError, SchwabClient, _RateLimiter
 
 
@@ -20,25 +24,31 @@ class _MockResponse:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}", request=MagicMock(), response=self
+            )
 
 
 @pytest.fixture
-def mock_auth():
+def mock_raw():
+    """Stand-in for the schwab-py AsyncClient (`SchwabClient.raw`)."""
+    return MagicMock(name="AsyncClient")
+
+
+@pytest.fixture
+def mock_auth(mock_raw):
     auth = MagicMock()
-    auth.get_access_token.return_value = "test-access-token"
+    auth.get_client.return_value = mock_raw
     return auth
 
 
 @pytest.fixture
 def client(mock_auth):
-    with patch("screener.data.schwab.client.httpx.AsyncClient"):
-        c = SchwabClient(auth=mock_auth)
-    return c
+    return SchwabClient(auth=mock_auth)
 
 
 # ---------------------------------------------------------------------------
-# Rate limiter
+# Rate limiter (unchanged behavior from the hand-rolled client)
 # ---------------------------------------------------------------------------
 
 
@@ -51,11 +61,9 @@ def test_rate_limiter_allows_immediate_request_when_tokens_available():
 
 def test_rate_limiter_computes_wait_when_tokens_exhausted():
     limiter = _RateLimiter(rate=2.0, capacity=2.0)
-    # Drain the bucket and pin last_refill to "now" so no refill has happened.
     limiter._tokens = 0.0
-    limiter._last_refill = limiter._last_refill  # no-op, just documenting intent
 
-    import time
+    from unittest.mock import patch
     with patch("screener.data.schwab.client.time.monotonic", return_value=limiter._last_refill):
         wait = limiter._compute_wait()
 
@@ -68,6 +76,7 @@ async def test_rate_limiter_acquire_sleeps_computed_wait():
     limiter = _RateLimiter(rate=2.0, capacity=2.0)
     limiter._tokens = 0.0
 
+    from unittest.mock import patch
     with patch("screener.data.schwab.client.time.monotonic", return_value=limiter._last_refill), \
          patch("screener.data.schwab.client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         await limiter.acquire()
@@ -80,6 +89,7 @@ async def test_rate_limiter_acquire_sleeps_computed_wait():
 async def test_rate_limiter_acquire_does_not_sleep_when_token_available():
     limiter = _RateLimiter(rate=2.0, capacity=2.0)
 
+    from unittest.mock import patch
     with patch("screener.data.schwab.client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         await limiter.acquire()
 
@@ -87,95 +97,127 @@ async def test_rate_limiter_acquire_does_not_sleep_when_token_available():
 
 
 # ---------------------------------------------------------------------------
-# get() — token injection
+# .raw — lazy construction, never prompts interactively
 # ---------------------------------------------------------------------------
 
 
-async def test_get_injects_bearer_token_into_authorization_header(client, mock_auth):
+def test_raw_lazily_constructs_client_via_auth_get_client(client, mock_auth, mock_raw):
+    mock_auth.get_client.assert_not_called()
+
+    result = client.raw
+
+    assert result is mock_raw
+    mock_auth.get_client.assert_called_once()
+
+
+def test_raw_is_cached_across_accesses(client, mock_auth):
+    _ = client.raw
+    _ = client.raw
+
+    mock_auth.get_client.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# get() — legacy raw-path GET
+# ---------------------------------------------------------------------------
+
+
+async def test_get_calls_raw_get_request_and_returns_json(client, mock_raw):
     mock_response = _MockResponse(200, {"candles": []})
-    client._client.get = AsyncMock(return_value=mock_response)
+    mock_raw._get_request = AsyncMock(return_value=mock_response)
 
     result = await client.get("/marketdata/v1/pricehistory", {"symbol": "AAPL"})
 
     assert result == {"candles": []}
-    mock_auth.get_access_token.assert_called_once()
-    _, call_kwargs = client._client.get.call_args
-    assert call_kwargs["headers"]["Authorization"] == "Bearer test-access-token"
+    mock_raw._get_request.assert_awaited_once_with(
+        "/marketdata/v1/pricehistory", {"symbol": "AAPL"}
+    )
 
 
-# ---------------------------------------------------------------------------
-# get() — 401 refresh + retry
-# ---------------------------------------------------------------------------
+async def test_get_raises_on_non_429_error_status(client, mock_raw):
+    """A non-429 error status (e.g. a 401 that authlib's proactive refresh
+    didn't prevent) is no longer specially retried — it propagates via
+    raise_for_status() so callers' broad except-Exception fallback logic
+    still catches it."""
+    mock_raw._get_request = AsyncMock(return_value=_MockResponse(401))
 
-
-async def test_401_triggers_single_refresh_and_retry_then_succeeds(client, mock_auth):
-    mock_auth.get_access_token.side_effect = ["stale-token", "fresh-token"]
-    responses = [_MockResponse(401), _MockResponse(200, {"candles": []})]
-    client._client.get = AsyncMock(side_effect=responses)
-
-    result = await client.get("/marketdata/v1/pricehistory", {"symbol": "AAPL"})
-
-    assert result == {"candles": []}
-    assert mock_auth.get_access_token.call_count == 2
-    assert client._client.get.call_count == 2
-    # second call must use the refreshed token
-    _, second_kwargs = client._client.get.call_args_list[1]
-    assert second_kwargs["headers"]["Authorization"] == "Bearer fresh-token"
-
-
-async def test_401_twice_raises_schwab_api_error(client, mock_auth):
-    mock_auth.get_access_token.side_effect = ["stale-token", "still-stale-token"]
-    responses = [_MockResponse(401), _MockResponse(401)]
-    client._client.get = AsyncMock(side_effect=responses)
-
-    with pytest.raises(SchwabAPIError):
+    with pytest.raises(httpx.HTTPStatusError):
         await client.get("/marketdata/v1/pricehistory", {"symbol": "AAPL"})
 
-    assert mock_auth.get_access_token.call_count == 2
-    assert client._client.get.call_count == 2
+    mock_raw._get_request.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
-# get() — 429 backoff + retry
+# call() — generic typed-method wrapper
 # ---------------------------------------------------------------------------
 
 
-async def test_429_with_retry_after_header_waits_and_retries(client, mock_auth):
+async def test_call_awaits_request_fn_and_returns_json(client):
+    mock_response = _MockResponse(200, {"quote": "data"})
+    request_fn = AsyncMock(return_value=mock_response)
+
+    result = await client.call(request_fn)
+
+    assert result == {"quote": "data"}
+    request_fn.assert_awaited_once()
+
+
+async def test_call_does_not_touch_raw_directly(client, mock_auth):
+    """call() just awaits whatever request_fn returns — it doesn't need to
+    reach into .raw itself, so a request_fn that closes over a client's
+    .raw (as real callers will do) shouldn't cause a second construction."""
+    mock_response = _MockResponse(200, {})
+    request_fn = AsyncMock(return_value=mock_response)
+
+    await client.call(request_fn)
+
+    mock_auth.get_client.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 429 backoff + retry — shared by get() and call()
+# ---------------------------------------------------------------------------
+
+
+async def test_429_with_retry_after_header_waits_and_retries(client, mock_raw):
     responses = [
         _MockResponse(429, headers={"Retry-After": "3"}),
         _MockResponse(200, {"candles": []}),
     ]
-    client._client.get = AsyncMock(side_effect=responses)
+    mock_raw._get_request = AsyncMock(side_effect=responses)
 
+    from unittest.mock import patch
     with patch("screener.data.schwab.client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         result = await client.get("/marketdata/v1/pricehistory", {"symbol": "AAPL"})
 
     assert result == {"candles": []}
-    assert client._client.get.call_count == 2
+    assert mock_raw._get_request.await_count == 2
     mock_sleep.assert_awaited_once_with(3.0)
 
 
-async def test_429_repeated_past_retry_cap_raises(client, mock_auth):
+async def test_429_repeated_past_retry_cap_raises(client, mock_raw):
     responses = [
         _MockResponse(429, headers={"Retry-After": "1"}),
         _MockResponse(429, headers={"Retry-After": "1"}),
     ]
-    client._client.get = AsyncMock(side_effect=responses)
+    mock_raw._get_request = AsyncMock(side_effect=responses)
 
+    from unittest.mock import patch
     with patch("screener.data.schwab.client.asyncio.sleep", new_callable=AsyncMock):
         with pytest.raises(SchwabAPIError):
             await client.get("/marketdata/v1/pricehistory", {"symbol": "AAPL"})
 
-    assert client._client.get.call_count == 2
+    assert mock_raw._get_request.await_count == 2
 
 
-async def test_429_without_retry_after_header_uses_fixed_backoff(client, mock_auth):
+async def test_429_without_retry_after_header_uses_fixed_backoff(client, mock_raw):
     responses = [
         _MockResponse(429),
         _MockResponse(200, {"candles": []}),
     ]
-    client._client.get = AsyncMock(side_effect=responses)
+    mock_raw._get_request = AsyncMock(side_effect=responses)
 
+    from unittest.mock import patch
     with patch("screener.data.schwab.client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         result = await client.get("/marketdata/v1/pricehistory", {"symbol": "AAPL"})
 
@@ -183,19 +225,19 @@ async def test_429_without_retry_after_header_uses_fixed_backoff(client, mock_au
     mock_sleep.assert_awaited_once_with(1.0)
 
 
-# ---------------------------------------------------------------------------
-# get() — SchwabAuthExpired propagation
-# ---------------------------------------------------------------------------
+async def test_call_retries_on_429_too(client):
+    responses = [
+        _MockResponse(429),
+        _MockResponse(200, {"movers": []}),
+    ]
+    request_fn = AsyncMock(side_effect=responses)
 
+    from unittest.mock import patch
+    with patch("screener.data.schwab.client.asyncio.sleep", new_callable=AsyncMock):
+        result = await client.call(request_fn)
 
-async def test_schwab_auth_expired_propagates_uncaught(client, mock_auth):
-    mock_auth.get_access_token.side_effect = SchwabAuthExpired("no valid token")
-    client._client.get = AsyncMock()
-
-    with pytest.raises(SchwabAuthExpired):
-        await client.get("/marketdata/v1/pricehistory", {"symbol": "AAPL"})
-
-    client._client.get.assert_not_called()
+    assert result == {"movers": []}
+    assert request_fn.await_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +245,16 @@ async def test_schwab_auth_expired_propagates_uncaught(client, mock_auth):
 # ---------------------------------------------------------------------------
 
 
-async def test_aclose_closes_underlying_httpx_client(client):
-    client._client.aclose = AsyncMock()
+async def test_aclose_closes_raw_session_if_constructed(client, mock_raw):
+    mock_raw.close_async_session = AsyncMock()
+
+    _ = client.raw  # force construction
     await client.aclose()
-    client._client.aclose.assert_awaited_once()
+
+    mock_raw.close_async_session.assert_awaited_once()
+
+
+async def test_aclose_is_noop_if_raw_never_constructed(client, mock_auth):
+    await client.aclose()
+
+    mock_auth.get_client.assert_not_called()

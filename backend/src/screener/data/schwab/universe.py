@@ -11,9 +11,9 @@ fixed here)
 `screener.universe.base.UniverseProvider` declares `get_symbols`/`get_quotes`
 as plain **sync** methods. This class implements `get_symbols`, `get_quotes`,
 and `quote_for` as **`async def`** instead, because the only way to fetch
-Schwab data is `SchwabClient.get`, which is itself `async def` (it awaits an
-async rate limiter and an async `httpx` call) — there is no synchronous
-Schwab HTTP path to call into.
+Schwab data is `SchwabClient.get`/`SchwabClient.call`, both of which are
+`async def` (they await an async rate limiter and an async `httpx` call) —
+there is no synchronous Schwab HTTP path to call into.
 
 Bridging sync-over-async here (e.g. wrapping the async calls in
 `asyncio.run(...)` inside a nominally-sync `get_symbols`) would not be safe:
@@ -47,10 +47,12 @@ from screener.utils.logging import get_logger
 logger = get_logger(__name__)
 
 _MIN_MARKET_CAP = 10_000_000_000  # $10B cap floor — drop penny/small-cap losers
-_TOP_N = 15
-
-_MOVERS_PATH = "/marketdata/v1/movers/$SPX"
-_QUOTES_PATH = "/marketdata/v1/quotes"
+# NOTE: Schwab's get_movers() endpoint itself only ever returns the top ~10
+# movers for an index (a Schwab API limitation, not enforced by this
+# constant) — this cap is kept at 20 anyway for consistency with
+# `screener.universe.losers.LosersUniverse`'s `_TOP_N` and because the
+# watchlist-union step below can still push the candidate count past 10.
+_TOP_N = 20
 
 
 class SchwabLosersUniverse(UniverseProvider):
@@ -65,7 +67,7 @@ class SchwabLosersUniverse(UniverseProvider):
         self._quotes: dict[str, dict] = {}
 
     async def get_symbols(self) -> list[str]:
-        """Top-15 (by % loss) large-cap equity losers, unioned with
+        """Top-20 (by % loss) large-cap equity losers, unioned with
         watchlist symbols currently down today. Also stashes quote metadata
         for `get_quotes()`, fetched once per call."""
         movers = await self._fetch_movers()
@@ -102,8 +104,8 @@ class SchwabLosersUniverse(UniverseProvider):
         return self._to_meta(info)
 
     async def _fetch_movers(self) -> list[dict]:
-        """Call Schwab's movers-down endpoint and return the raw screener
-        list.
+        """Call Schwab's movers-down endpoint (via schwab-py's typed
+        `get_movers`) and return the raw screener list.
 
         # NOTE: the exact response shape assumed below — a dict with a
         # top-level `screeners` list, each item roughly
@@ -113,11 +115,21 @@ class SchwabLosersUniverse(UniverseProvider):
         # documented conventions for Schwab's Trader API movers endpoint. It
         # has not been exercised against a real response yet (no live
         # credentials this session) and should be corrected against the
-        # actual API docs/responses once available.
+        # actual API docs/responses once available. This is purely a
+        # response-shape concern — independent of the transport call below,
+        # which now goes through schwab-py's typed `get_movers` rather than
+        # a raw path/params GET.
         """
-        params = {"sort": "PERCENT_CHANGE_DOWN", "frequency": 0}
+        movers = self._client.raw.Movers
         try:
-            payload = await self._client.get(_MOVERS_PATH, params)
+            payload = await self._client.call(
+                lambda: self._client.raw.get_movers(
+                    movers.Index.SPX,
+                    sort_order=movers.SortOrder.PERCENT_CHANGE_DOWN,
+                    frequency=movers.Frequency.ZERO,
+                ),
+                label="get_movers",
+            )
         except Exception as exc:
             logger.warning("schwab_movers_error", error=str(exc))
             return []
@@ -127,7 +139,7 @@ class SchwabLosersUniverse(UniverseProvider):
 
     def _filter_and_rank(self, candidates: list[dict]) -> list[dict]:
         """Drop non-EQUITY and sub-$10B market cap names, then take the top
-        15 by % loss (most negative `netPercentChange` first).
+        20 by % loss (most negative `netPercentChange` first).
 
         Note: Schwab's movers payload itself (see `_fetch_movers`'s NOTE)
         has no documented market-cap/quote-type field, so — unlike
@@ -191,17 +203,30 @@ class SchwabLosersUniverse(UniverseProvider):
         # against real Schwab data. Industry/sector enrichment for
         # Schwab-sourced quotes is handled separately, at the provider-
         # factory composition layer (see `screener.data.factory`'s
-        # `_FallbackLosersUniverse` enrichment helper), not in this file.
+        # `_MergedLosersUniverse` enrichment helper), not in this file.
         # Still genuinely UNVERIFIED: exact field availability/behavior
         # across all equity subtypes, and the Screener/movers response shape
         # (handled separately by `_fetch_movers` above, which is NOT touched
-        # by this verification pass and keeps its own UNVERIFIED note).
+        # by this verification pass and keeps its own UNVERIFIED note). This
+        # is purely a response-shape concern — independent of the transport
+        # call below, which now goes through schwab-py's typed `get_quotes`
+        # rather than a raw path/params GET.
         """
         if not symbols:
             return {}
-        params = {"symbols": ",".join(symbols), "fields": "fundamental,quote,reference"}
+        quote_fields = self._client.raw.Quote.Fields
         try:
-            payload = await self._client.get(_QUOTES_PATH, params)
+            payload = await self._client.call(
+                lambda: self._client.raw.get_quotes(
+                    symbols,
+                    fields=[
+                        quote_fields.FUNDAMENTAL,
+                        quote_fields.QUOTE,
+                        quote_fields.REFERENCE,
+                    ],
+                ),
+                label="get_quotes",
+            )
         except Exception as exc:
             logger.warning("schwab_quote_error", symbols=symbols, error=str(exc))
             return {}

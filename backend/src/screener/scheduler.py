@@ -17,6 +17,30 @@ logger = get_logger(__name__)
 _RULES_PATH = Path("config/rules.yaml")
 
 
+async def _scheduled_run() -> None:
+    """Job target for the cron trigger. Wraps `run_screener` to bake in
+    `check_market_hours=True` — only scheduled runs are gated on the
+    equity market being open today; manual `--once`/`--ticker` invocations
+    call `run_screener()` directly with the default `check_market_hours=False`
+    and are never gated.
+
+    Defined as a real module-level `async def` (rather than passing
+    `functools.partial(run_screener, check_market_hours=True)` straight to
+    `add_job`) because APScheduler's `AsyncIOExecutor` decides how to invoke
+    a job via `apscheduler.util.iscoroutinefunction_partial(job.func)`.
+    Reading the installed apscheduler 3.11.2 source
+    (`.venv/lib/python3.12/site-packages/apscheduler/util.py`), that helper
+    DOES unwrap `functools.partial` before checking
+    `asyncio.iscoroutinefunction`, so a `functools.partial`-wrapped
+    `run_screener` would in fact be detected correctly on this installed
+    version. A plain wrapper function is used anyway: it doesn't depend on
+    that partial-unwrapping detail of the installed apscheduler version
+    holding on every future upgrade, and it's unambiguous either way this
+    executor's version-detection logic evolves.
+    """
+    await run_screener(check_market_hours=True)
+
+
 def start() -> None:
     """Start the async cron scheduler. Blocks until SIGINT/SIGTERM."""
     asyncio.run(_run_scheduler())
@@ -31,7 +55,7 @@ async def _run_scheduler() -> None:
 
     scheduler = AsyncIOScheduler()
     trigger = CronTrigger.from_crontab(cron_expr, timezone=tz)
-    scheduler.add_job(run_screener, trigger=trigger, id="screener")
+    scheduler.add_job(_scheduled_run, trigger=trigger, id="screener")
     scheduler.start()
 
     logger.info("scheduler_started", cron=cron_expr, timezone=tz)

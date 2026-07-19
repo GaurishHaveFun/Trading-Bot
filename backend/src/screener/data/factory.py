@@ -3,13 +3,16 @@ plan). Composes the Schwab-backed providers (bars, losers-universe) with
 their yfinance equivalents behind the existing DataProvider / UniverseProvider
 interfaces, with automatic PER-CALL fallback to yfinance on any Schwab
 failure — a transient Schwab failure for one symbol/call must not take down
-an entire run. Fundamentals use a different composition than bars/universe:
-instead of schwab-first-then-fallback, `build_fundamentals_provider` MERGES
-yfinance (base/fallback source of truth for everything) with Schwab's 3 real
-TTM metrics layered on top per-field when available (see
-`_MergedFundamentalsProvider`'s docstring) — a straight try/fallback
-wouldn't make sense here since Schwab and yfinance each independently supply
-a different, non-overlapping subset of the 6 quality-gate metrics."""
+an entire run. Bars use a pure schwab-then-fallback composition
+(`_FallbackBarProvider`). Fundamentals and the losers-universe both instead
+MERGE Schwab with yfinance rather than picking one exclusively:
+`build_fundamentals_provider` layers Schwab's 3 real TTM metrics on top of a
+full yfinance snapshot per-field when available (see
+`_MergedFundamentalsProvider`'s docstring), and `_build_losers_universe`'s
+`_MergedLosersUniverse` unions Schwab's movers (capped at ~10 by Schwab's own
+API) with yfinance's independent top-20 scan into one top-20 universe
+whenever Schwab is healthy, falling back to yfinance-only only when Schwab
+itself fails or returns nothing (see `_MergedLosersUniverse`'s docstring)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -127,22 +130,54 @@ async def _enrich_industry_sector(meta: dict, symbol: str) -> dict:
     return enriched
 
 
-class _FallbackLosersUniverse(UniverseProvider):
-    """Schwab-first, yfinance-fallback wrapper for the 'losers' universe.
-    Tracks which underlying provider actually succeeded on the most recent
-    get_symbols() call (`_active`) so get_quotes() routes to that SAME
-    provider's stashed quotes rather than stale/empty state from the other
-    one. quote_for() independently tries schwab-then-yfinance per call (it
-    doesn't depend on get_symbols() having been called first)."""
+_MERGED_TOP_N = 20  # matches LosersUniverse/SchwabLosersUniverse's own _TOP_N
+
+
+class _MergedLosersUniverse(UniverseProvider):
+    """Schwab-primary, yfinance-UNIONED wrapper for the 'losers' universe.
+
+    Schwab's `get_movers()` endpoint itself only ever returns the top ~10
+    movers for an index (a real Schwab API limitation) — so a true top-20
+    universe cannot come from Schwab alone. Per explicit user request ("use
+    both, I actually want top 20"), this class combines Schwab's movers with
+    yfinance's independent top-20 scan into a single unioned universe on
+    every call where Schwab is healthy, rather than treating yfinance as a
+    pure emergency fallback (which is how the pre-merge `_FallbackLosersUniverse`
+    this class replaces used to behave).
+
+    get_symbols() behavior:
+      - Schwab raises OR returns an empty symbol list: degrades to a pure
+        yfinance-only top-20, logging `provider_fallback` — unchanged in
+        spirit from the pre-merge fallback behavior (get_quotes() also
+        re-fetches lazily from yfinance in this branch, not from stored
+        state, matching the old contract).
+      - Schwab returns ANY symbols (even just a few): ALSO always calls
+        yfinance's get_symbols()/get_quotes() and unions the two
+        `{symbol: meta}` quote dicts. For a symbol present in both sources,
+        the Schwab-sourced entry wins (Schwab is treated as primary
+        elsewhere in this file, e.g. fundamentals merging) — but Schwab
+        entries are still run through `_enrich_industry_sector` first
+        (Schwab's schema has no industry/sector field at all; yfinance
+        entries already carry real values and are never re-enriched). The
+        unioned dict is then re-ranked by `change_pct` ascending (most
+        negative/worst loss first, matching both sources' own internal
+        `_filter_and_rank` sort direction) and sliced to the top 20. That
+        top-20 dict is stored and is what get_quotes() returns.
+
+    quote_for() is UNCHANGED from the old schwab-try-then-yfinance-fallback
+    per-call behavior — it's a different codepath (used by `--ticker` debug
+    mode for a symbol that may not even be in the current movers list) and
+    is intentionally NOT part of the union/merge semantics above."""
 
     def __init__(self, schwab: SchwabLosersUniverse, yfinance: LosersUniverse) -> None:
         self._schwab = schwab
         self._yfinance = yfinance
-        self._active: str | None = None  # "schwab" | "yfinance" | None
+        self._active: str | None = None  # "merged" | "yfinance" | None
+        self._quotes: dict[str, dict] = {}
 
     async def get_symbols(self) -> list[str]:
         try:
-            symbols = await self._schwab.get_symbols()
+            schwab_symbols = await self._schwab.get_symbols()
         except Exception as exc:
             logger.warning(
                 "provider_fallback",
@@ -150,55 +185,42 @@ class _FallbackLosersUniverse(UniverseProvider):
                 operation="get_symbols",
                 reason=str(exc),
             )
-            symbols = await self._yfinance.get_symbols()
             self._active = "yfinance"
-            return symbols
-        if symbols:
-            self._active = "schwab"
-            return symbols
-        logger.warning(
-            "provider_fallback",
-            provider="schwab",
-            operation="get_symbols",
-            reason="schwab returned no data",
-        )
-        symbols = await self._yfinance.get_symbols()
-        self._active = "yfinance"
-        return symbols
+            return await self._yfinance.get_symbols()
 
-    async def get_quotes(self) -> dict[str, dict]:
-        if self._active == "schwab":
-            try:
-                quotes = await self._schwab.get_quotes()
-            except Exception as exc:
-                logger.warning(
-                    "provider_fallback",
-                    provider="schwab",
-                    operation="get_quotes",
-                    reason=str(exc),
-                )
-                quotes = await self._yfinance.get_quotes()
-                self._active = "yfinance"
-                return quotes
-            if quotes:
-                # Schwab-sourced quotes have no industry/sector of their own
-                # (confirmed absent from Schwab's schema) — enrich every
-                # entry before returning. yfinance-fallback quotes below are
-                # NOT re-enriched; they already carry real yfinance-sourced
-                # industry/sector from LosersUniverse itself.
-                return {
-                    symbol: await _enrich_industry_sector(meta, symbol)
-                    for symbol, meta in quotes.items()
-                }
+        if not schwab_symbols:
             logger.warning(
                 "provider_fallback",
                 provider="schwab",
-                operation="get_quotes",
+                operation="get_symbols",
                 reason="schwab returned no data",
             )
-            quotes = await self._yfinance.get_quotes()
             self._active = "yfinance"
-            return quotes
+            return await self._yfinance.get_symbols()
+
+        # Schwab succeeded (even partially) — ALWAYS also pull yfinance and
+        # union the two sources; Schwab alone can never cover a top-20 (its
+        # movers endpoint caps out around 10).
+        schwab_quotes = await self._schwab.get_quotes()
+        enriched_schwab = {
+            symbol: await _enrich_industry_sector(meta, symbol)
+            for symbol, meta in schwab_quotes.items()
+        }
+
+        await self._yfinance.get_symbols()
+        yfinance_quotes = await self._yfinance.get_quotes()
+
+        merged = dict(yfinance_quotes)
+        merged.update(enriched_schwab)  # Schwab wins on symbol overlap
+
+        ranked = sorted(merged.items(), key=lambda kv: kv[1].get("change_pct") or 0.0)
+        self._quotes = dict(ranked[:_MERGED_TOP_N])
+        self._active = "merged"
+        return sorted(self._quotes.keys())
+
+    async def get_quotes(self) -> dict[str, dict]:
+        if self._active == "merged":
+            return dict(self._quotes)
         if self._active == "yfinance":
             return await self._yfinance.get_quotes()
         return {}
@@ -216,7 +238,7 @@ class _FallbackLosersUniverse(UniverseProvider):
             )
             return await self._yfinance.quote_for(symbol)
         if quote is not None:
-            # Same enrichment as get_quotes() above: only for the
+            # Same enrichment as get_symbols()'s merge above: only for the
             # Schwab-sourced result, never for the yfinance-fallback branch
             # below (which already has real industry/sector).
             return await _enrich_industry_sector(quote, symbol)
@@ -231,7 +253,7 @@ class _FallbackLosersUniverse(UniverseProvider):
 
 
 def _build_losers_universe(settings: Settings, watchlist: set[str]) -> UniverseProvider:
-    """Losers-shaped universe provider: schwab-with-fallback when
+    """Losers-shaped universe provider: schwab-primary-yfinance-unioned when
     settings.data_provider == 'schwab', else the plain yfinance
     LosersUniverse (no behavior change from today in that case)."""
     if settings.data_provider != "schwab":
@@ -240,7 +262,7 @@ def _build_losers_universe(settings: Settings, watchlist: set[str]) -> UniverseP
     client = SchwabClient(auth)
     schwab_universe = SchwabLosersUniverse(client=client, watchlist=watchlist)
     yfinance_universe = LosersUniverse(watchlist=watchlist)
-    return _FallbackLosersUniverse(schwab_universe, yfinance_universe)
+    return _MergedLosersUniverse(schwab_universe, yfinance_universe)
 
 
 def build_universe_provider(settings: Settings, watchlist: set[str]) -> UniverseProvider:
@@ -253,10 +275,11 @@ def build_universe_provider(settings: Settings, watchlist: set[str]) -> Universe
 
 
 def build_quote_lookup_provider(settings: Settings, watchlist: set[str]) -> UniverseProvider:
-    """Always a losers-shaped provider (schwab-with-fallback-or-yfinance),
-    regardless of settings.universe. Used by --ticker debug mode's single-
-    symbol quote_for lookup, matching main.py's pre-existing behavior of
-    always instantiating a LosersUniverse for this purpose even when
+    """Always a losers-shaped provider (schwab-primary-yfinance-unioned, or
+    plain yfinance when data_provider != 'schwab'), regardless of
+    settings.universe. Used by --ticker debug mode's single-symbol
+    quote_for lookup, matching main.py's pre-existing behavior of always
+    instantiating a LosersUniverse for this purpose even when
     settings.universe == 'static' (ticker-debug wants real quote metadata
     for the one symbol being debugged, independent of which universe mode
     is configured for full runs)."""
