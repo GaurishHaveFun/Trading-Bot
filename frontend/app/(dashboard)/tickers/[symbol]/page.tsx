@@ -1,5 +1,6 @@
 import Link from "next/link";
 import PriceChart from "@/components/PriceChart";
+import PriceStats from "@/components/PriceStats";
 import ScoreGauge from "@/components/ScoreGauge";
 import { getTickerHistory } from "@/lib/queries";
 import type { TickerHistory } from "@/lib/types";
@@ -49,6 +50,8 @@ export default async function TickerPage({
           <div className="glass-panel panel-enter p-4">
             <PriceChart bars={history.bars} />
           </div>
+
+          <PriceStats bars={history.bars} latestSnapshot={history.signals[0]?.signal.snapshot} />
 
           <div className="glass-panel-dense panel-enter overflow-x-auto">
             <table className="min-w-full text-sm">
