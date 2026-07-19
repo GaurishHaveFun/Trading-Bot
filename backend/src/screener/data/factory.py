@@ -3,11 +3,18 @@ plan). Composes the Schwab-backed providers (bars, losers-universe) with
 their yfinance equivalents behind the existing DataProvider / UniverseProvider
 interfaces, with automatic PER-CALL fallback to yfinance on any Schwab
 failure — a transient Schwab failure for one symbol/call must not take down
-an entire run. Fundamentals intentionally do NOT get this fallback treatment
-(see build_fundamentals_provider's docstring)."""
+an entire run. Fundamentals use a different composition than bars/universe:
+instead of schwab-first-then-fallback, `build_fundamentals_provider` MERGES
+yfinance (base/fallback source of truth for everything) with Schwab's 3 real
+TTM metrics layered on top per-field when available (see
+`_MergedFundamentalsProvider`'s docstring) — a straight try/fallback
+wouldn't make sense here since Schwab and yfinance each independently supply
+a different, non-overlapping subset of the 6 quality-gate metrics."""
 from __future__ import annotations
 
 from pathlib import Path
+
+import yfinance as yf
 
 from screener.config import Settings
 from screener.data.base import DataProvider
@@ -17,8 +24,10 @@ from screener.data.fundamentals_provider import FundamentalsProvider
 from screener.data.schwab.auth import SchwabAuth
 from screener.data.schwab.bars_provider import SchwabProvider
 from screener.data.schwab.client import SchwabClient
+from screener.data.schwab.fundamentals_provider import SchwabFundamentalsProvider
 from screener.data.schwab.universe import SchwabLosersUniverse
 from screener.data.yfinance_provider import YFinanceProvider
+from screener.models import FundamentalsSnapshot
 from screener.universe.base import UniverseProvider
 from screener.universe.losers import LosersUniverse
 from screener.universe.static import StaticUniverse
@@ -75,6 +84,49 @@ def build_bar_provider(settings: Settings, cache: BarCache) -> DataProvider:
     return _FallbackBarProvider(schwab_provider, yfinance_provider)
 
 
+async def _enrich_industry_sector(meta: dict, symbol: str) -> dict:
+    """Best-effort fill-in of `industry`/`sector` for a Schwab-sourced quote
+    meta dict. Schwab's ReferenceEquity schema has been confirmed (against
+    the real Schwab OpenAPI spec) to carry NO industry/sector fields at all
+    (see `screener.data.schwab.universe`'s confirmation notes), so
+    Schwab-derived quotes always have `industry`/`sector` as `None` — which
+    would silently break `main.py`'s `is_chip` detection (it checks
+    `"semiconductor" in industry.lower()`). This falls back to a yfinance
+    lookup, reusing the exact same `yf.Ticker(symbol).info` ->
+    `.get("industry") or .get("industryKey")` / `.get("sector")` pattern
+    already used by `screener.universe.losers.LosersUniverse._to_meta`.
+
+    Only fills in whatever field(s) are actually missing — never overwrites
+    an already-present value. Never raises: any yfinance lookup failure
+    (network error, bad symbol, etc.) is caught, logged, and the meta dict
+    is returned as-is (best-effort enrichment must never take down the
+    whole quote lookup)."""
+    if meta.get("industry") and meta.get("sector"):
+        return meta
+
+    # asyncio.to_thread judgment call: this is a blocking yfinance call made
+    # from an `async def` method. `LosersUniverse` (screener/universe/
+    # losers.py) already makes this exact same kind of blocking yfinance
+    # call from inside its own `async def` methods WITHOUT wrapping it in
+    # `asyncio.to_thread` (a known, explicitly-scoped-out gap from the
+    # milestone that made those methods async). We match that existing
+    # precedent here for consistency with the rest of this codebase's
+    # current state, rather than introducing to_thread only for this one
+    # new call site.
+    try:
+        info = yf.Ticker(symbol).info
+    except Exception as exc:
+        logger.warning("industry_sector_enrichment_error", symbol=symbol, error=str(exc))
+        return meta
+
+    enriched = dict(meta)
+    if not enriched.get("industry"):
+        enriched["industry"] = info.get("industry") or info.get("industryKey")
+    if not enriched.get("sector"):
+        enriched["sector"] = info.get("sector")
+    return enriched
+
+
 class _FallbackLosersUniverse(UniverseProvider):
     """Schwab-first, yfinance-fallback wrapper for the 'losers' universe.
     Tracks which underlying provider actually succeeded on the most recent
@@ -129,7 +181,15 @@ class _FallbackLosersUniverse(UniverseProvider):
                 self._active = "yfinance"
                 return quotes
             if quotes:
-                return quotes
+                # Schwab-sourced quotes have no industry/sector of their own
+                # (confirmed absent from Schwab's schema) — enrich every
+                # entry before returning. yfinance-fallback quotes below are
+                # NOT re-enriched; they already carry real yfinance-sourced
+                # industry/sector from LosersUniverse itself.
+                return {
+                    symbol: await _enrich_industry_sector(meta, symbol)
+                    for symbol, meta in quotes.items()
+                }
             logger.warning(
                 "provider_fallback",
                 provider="schwab",
@@ -156,7 +216,10 @@ class _FallbackLosersUniverse(UniverseProvider):
             )
             return await self._yfinance.quote_for(symbol)
         if quote is not None:
-            return quote
+            # Same enrichment as get_quotes() above: only for the
+            # Schwab-sourced result, never for the yfinance-fallback branch
+            # below (which already has real industry/sector).
+            return await _enrich_industry_sector(quote, symbol)
         logger.warning(
             "provider_fallback",
             symbol=symbol,
@@ -200,19 +263,101 @@ def build_quote_lookup_provider(settings: Settings, watchlist: set[str]) -> Univ
     return _build_losers_universe(settings, watchlist)
 
 
-def build_fundamentals_provider(settings: Settings, cache: FundamentalsCache) -> FundamentalsProvider:
-    """Decision 2 (locked, do not change without explicit sign-off): ALWAYS
-    returns the yfinance-backed FundamentalsProvider, regardless of
-    settings.data_provider. SchwabFundamentalsProvider (Milestone 3) never
-    raises — Schwab's quote endpoint is a point-in-time snapshot, not the
-    multi-year statements the quality gate's 6 metrics need, so it always
-    returns an empty (years_available=0, all-metrics-None) snapshot rather
-    than an exception. A naive try/except fallback ("try Schwab, catch
-    exception, fall back to yfinance") would therefore NEVER actually fall
-    back for fundamentals: it would silently accept Schwab's useless empty
-    snapshot every time, and the quality gate (which needs real metric
-    values to pass tickers through) would end up excluding every ticker.
-    So fundamentals intentionally bypass the data_provider knob entirely —
-    do not wire SchwabFundamentalsProvider in here without first solving
-    that problem (a future revision, not this one)."""
-    return FundamentalsProvider(cache)
+class _NoOpFundamentalsCache:
+    """Stand-in for `FundamentalsCache` used ONLY for the internal
+    `SchwabFundamentalsProvider` instance inside `_MergedFundamentalsProvider`.
+
+    `SchwabFundamentalsProvider` writes whatever snapshot it builds into
+    whatever cache it's constructed with, keyed only by symbol
+    (`cache.put(symbol, snapshot)`). If it were handed the SAME shared
+    `FundamentalsCache` the yfinance provider uses, its partial (3-of-6-
+    metrics, years_available=0) snapshot could silently clobber a
+    previously-cached, correctly-merged snapshot on a later cache read (or
+    vice versa) — the cache table has no concept of "this row is a partial
+    Schwab snapshot" vs. "this row is the final merged snapshot" for the
+    same symbol key. Handing Schwab's own provider this no-op cache instead
+    means its `get_fundamentals()` always does a fresh fetch (fine — it's
+    just one lightweight quote call) and never writes into the shared cache
+    table. The merged snapshot itself is never cached by
+    `_MergedFundamentalsProvider` either, but that's fine: the yfinance
+    provider's own call already caches its half of the data normally via the
+    shared `FundamentalsCache`, and Schwab's 3 fields are cheap enough to
+    refetch on every call."""
+
+    def get(self, symbol: str) -> FundamentalsSnapshot | None:
+        return None
+
+    def put(self, symbol: str, snapshot: FundamentalsSnapshot) -> None:
+        return None
+
+
+class _MergedFundamentalsProvider:
+    """Schwab-augmented fundamentals: yfinance is the base/fallback source of
+    truth for everything (`fcf_5y_cumulative`, `ocf_ni_ratio`,
+    `share_dilution_5y`, `years_available`, `ticker`, `as_of`), while
+    `interest_coverage`/`gross_margin`/`net_margin` are taken from Schwab's
+    real TTM quote fields whenever Schwab succeeds AND that specific field
+    is not `None` — per-field independently, falling back to yfinance's
+    value for any field Schwab didn't provide. Schwab failing entirely (any
+    exception) degrades gracefully to a snapshot identical to plain
+    yfinance fundamentals."""
+
+    _SCHWAB_FIELDS = ("interest_coverage", "gross_margin", "net_margin")
+
+    def __init__(
+        self, schwab: SchwabFundamentalsProvider, yfinance: FundamentalsProvider
+    ) -> None:
+        self._schwab = schwab
+        self._yfinance = yfinance
+
+    async def get_fundamentals(self, symbol: str) -> FundamentalsSnapshot | None:
+        base = await self._yfinance.get_fundamentals(symbol)
+        if base is None:
+            return None
+
+        try:
+            schwab_snapshot = await self._schwab.get_fundamentals(symbol)
+        except Exception as exc:
+            logger.warning("schwab_fundamentals_error", symbol=symbol, error=str(exc))
+            schwab_snapshot = None
+
+        update: dict[str, float | None] = {}
+        if schwab_snapshot is not None:
+            for field in self._SCHWAB_FIELDS:
+                value = getattr(schwab_snapshot, field)
+                if value is not None:
+                    update[field] = value
+
+        if not update:
+            return base
+
+        logger.info("schwab_fundamentals_merged", symbol=symbol, fields=list(update.keys()))
+        return base.model_copy(update=update)
+
+
+def build_fundamentals_provider(
+    settings: Settings, cache: FundamentalsCache
+) -> FundamentalsProvider | _MergedFundamentalsProvider:
+    """Revised design (supersedes the earlier "always plain yfinance"
+    decision, now that the real Schwab OpenAPI schema confirms Schwab's
+    `fundamental` section carries real TTM values for 3 of the 6
+    quality-gate metrics — interest_coverage/gross_margin/net_margin — via
+    `interestCoverage`/`grossMarginTTM`/`netProfitMarginTTM`).
+
+    - settings.data_provider != 'schwab': unchanged, returns the plain
+      yfinance-backed `FundamentalsProvider`.
+    - settings.data_provider == 'schwab': returns a `_MergedFundamentalsProvider`
+      that layers Schwab's 3 real TTM fields on top of a full yfinance
+      snapshot (which remains the source of truth for the other 3
+      structurally-Schwab-impossible metrics and for years_available). The
+      internal `SchwabFundamentalsProvider` is built with a private
+      `_NoOpFundamentalsCache` (see that class's docstring) rather than the
+      shared `cache`, so its partial snapshot never clobbers the shared
+      cache table."""
+    if settings.data_provider != "schwab":
+        return FundamentalsProvider(cache)
+    auth = _build_schwab_auth(settings)
+    client = SchwabClient(auth)
+    schwab_fundamentals = SchwabFundamentalsProvider(client, _NoOpFundamentalsCache())
+    yfinance_fundamentals = FundamentalsProvider(cache)
+    return _MergedFundamentalsProvider(schwab_fundamentals, yfinance_fundamentals)

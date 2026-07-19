@@ -107,13 +107,19 @@ class SchwabProvider(DataProvider):
 
         params = {
             "symbol": symbol,
-            # NOTE: the exact query-param shape below (periodType/frequencyType/
-            # frequency alongside explicit startDate/endDate, plus
-            # needExtendedHoursData) is a best-effort, UNVERIFIED assumption
-            # based on publicly documented conventions for Schwab's Trader API
-            # price-history endpoint. It has not been exercised against a real
-            # response yet (no live credentials this session) and should be
-            # corrected against the actual API docs/responses once available.
+            # NOTE (originally UNVERIFIED, now CONFIRMED against the real
+            # Schwab OpenAPI spec pasted in from developer.schwab.com): this
+            # query-param shape — periodType/frequencyType/frequency
+            # alongside explicit startDate/endDate, plus
+            # needExtendedHoursData — is CONFIRMED CORRECT. periodType="year"
+            # allows frequencyType of daily/weekly/monthly, and
+            # frequencyType="daily" requires frequency=1, exactly as used
+            # below. The response shape is likewise CONFIRMED CORRECT: a
+            # CandleList with top-level candles/empty/previousClose/
+            # previousCloseDate/previousCloseDateISO8601/symbol, where each
+            # Candle has open/high/low/close/datetime (epoch ms)/
+            # datetimeISO8601/volume — exactly what `_candles_to_bars` below
+            # already reads.
             "periodType": "year",
             "frequencyType": "daily",
             "frequency": 1,
@@ -128,7 +134,13 @@ class SchwabProvider(DataProvider):
         """Convert a Schwab price-history response payload's `candles` array
         into `list[Bar]`, dropping (not fabricating) any candle whose open/
         high/low/close is missing/None/NaN. A missing or empty `candles` key
-        yields an empty list."""
+        yields an empty list.
+
+        The CandleList/Candle response shape this reads (candles/empty/
+        previousClose/previousCloseDate/previousCloseDateISO8601/symbol at
+        the top level; open/high/low/close/datetime(epoch ms)/
+        datetimeISO8601/volume per candle) is CONFIRMED CORRECT against the
+        real Schwab OpenAPI spec — see the NOTE in `_fetch` above."""
         candles = payload.get("candles") or []
         bars: list[Bar] = []
         for candle in candles:

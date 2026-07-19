@@ -22,7 +22,7 @@ def _quote_entry(
 ) -> dict:
     return {
         "assetMainType": quote_type,
-        "quote": {"netPercentChangeInDouble": change_pct},
+        "quote": {"netPercentChange": change_pct},
         "fundamental": {"pbRatio": price_to_book, "marketCap": market_cap},
         "reference": {"industry": industry, "sector": sector},
     }
@@ -181,6 +181,17 @@ async def test_get_quotes_includes_watchlist_union_symbols():
 
 
 # --- quote_for (single-symbol debug helper) ---
+
+
+async def test_flatten_quote_entry_reads_net_percent_change_confirmed_field_name():
+    """Confirmed against the real Schwab OpenAPI spec: QuoteEquity's field is
+    `netPercentChange`, NOT `netPercentChangeInDouble` (a previously-fixed
+    bug). This directly exercises `_flatten_quote_entry`'s read of the
+    correct key."""
+    entry = _quote_entry(-2.75)
+    flattened = SchwabLosersUniverse._flatten_quote_entry("BIGCO", entry)
+
+    assert flattened["netPercentChange"] == -2.75
 
 
 async def test_quote_for_returns_meta_for_arbitrary_symbol():

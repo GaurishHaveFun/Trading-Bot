@@ -169,16 +169,33 @@ class SchwabLosersUniverse(UniverseProvider):
         (exception, non-dict payload) is caught/logged and yields an empty
         dict rather than raising.
 
-        # NOTE: the exact response shape assumed below — a dict keyed by
-        # symbol, each value with nested sections roughly like
-        # `{"assetMainType": "EQUITY", "quote": {"netPercentChangeInDouble":
-        # ...}, "fundamental": {"peRatio": ..., "pbRatio": ..., "marketCap":
-        # ...}, "reference": {"industry": ..., "sector": ..., ...}}` — is a
-        # best-effort, UNVERIFIED assumption based on publicly documented
-        # conventions for Schwab's Trader API quotes endpoint (exact nesting
-        # unverified). It has not been exercised against a real response yet
-        # (no live credentials this session) and should be corrected against
-        # the actual API docs/responses once available.
+        # NOTE (originally UNVERIFIED, now CONFIRMED against the real Schwab
+        # OpenAPI spec pasted in from developer.schwab.com): the response is
+        # a dict keyed by symbol -> QuoteResponseObject. For equities
+        # (EquityResponse) the top-level `assetMainType`/`assetSubType`/
+        # `symbol`/`quoteType` fields plus the nested `quote` (QuoteEquity),
+        # `fundamental` (Fundamental/FundamentalInst), and `reference`
+        # (ReferenceEquity) sections are CONFIRMED CORRECT — this nesting is
+        # exactly what `_flatten_quote_entry` below reads. Within those
+        # sections, `fundamental.pbRatio`, `fundamental.marketCap`, and
+        # `entry.assetMainType` are CONFIRMED CORRECT field names.
+        # CONFIRMED BUG (now fixed): `quote.netPercentChangeInDouble` does
+        # NOT exist on QuoteEquity — the real field is `quote.netPercentChange`
+        # (see `_flatten_quote_entry` below, which now reads the correct key).
+        # CONFIRMED ABSENT: `reference.industry` / `reference.sector` are NOT
+        # part of the real ReferenceEquity schema (confirmed fields are
+        # cusip/description/exchange/exchangeName/fsiDesc/htbQuantity/
+        # htbRate/isHardToBorrow/isShortable/otcMarketTier) — so
+        # `_flatten_quote_entry`'s `reference.get("industry")`/
+        # `reference.get("sector")` below will always resolve to `None`
+        # against real Schwab data. Industry/sector enrichment for
+        # Schwab-sourced quotes is handled separately, at the provider-
+        # factory composition layer (see `screener.data.factory`'s
+        # `_FallbackLosersUniverse` enrichment helper), not in this file.
+        # Still genuinely UNVERIFIED: exact field availability/behavior
+        # across all equity subtypes, and the Screener/movers response shape
+        # (handled separately by `_fetch_movers` above, which is NOT touched
+        # by this verification pass and keeps its own UNVERIFIED note).
         """
         if not symbols:
             return {}
@@ -205,13 +222,22 @@ class SchwabLosersUniverse(UniverseProvider):
         `day_losers` screen already hand to `LosersUniverse._to_meta`.
         Whenever a Schwab field for one of `_to_meta`'s keys doesn't have an
         honest/obvious source, the corresponding key here is `None` rather
-        than a fabricated guess."""
+        than a fabricated guess.
+
+        The `quote`/`fundamental`/`reference` nesting and the `pbRatio`/
+        `marketCap`/`assetMainType`/`netPercentChange` field names read below
+        are CONFIRMED CORRECT against the real Schwab OpenAPI spec (see the
+        NOTE on `_fetch_quotes_batch` above). `reference.industry` and
+        `reference.sector` are CONFIRMED ABSENT from the real ReferenceEquity
+        schema and will always be `None` here when sourced directly from
+        Schwab — industry/sector enrichment for Schwab quotes happens at the
+        factory composition layer, not in this file."""
         quote = entry.get("quote") or {}
         fundamental = entry.get("fundamental") or {}
         reference = entry.get("reference") or {}
         return {
             "symbol": symbol,
-            "netPercentChange": quote.get("netPercentChangeInDouble"),
+            "netPercentChange": quote.get("netPercentChange"),
             "priceToBook": fundamental.get("pbRatio"),
             "marketCap": fundamental.get("marketCap"),
             "quoteType": entry.get("assetMainType"),
