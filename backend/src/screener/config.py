@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     universe: str = "losers"  # "static" | "losers"
     watchlist_path: str = "config/watchlist.yaml"
+    database_url: str = ""
 
 
 class RuleConfig(BaseModel):

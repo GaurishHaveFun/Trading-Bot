@@ -1,0 +1,36 @@
+import Link from "next/link";
+import SignOutButton from "@/components/SignOutButton";
+
+export default function DashboardLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <div className="flex min-h-screen flex-col">
+      <header className="sticky top-0 z-10 px-4 pt-4">
+        <div className="glass-panel mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+          <nav className="flex items-center gap-6 text-sm font-medium">
+            <Link href="/" className="font-display text-base font-semibold text-foreground">
+              Screener
+            </Link>
+            <Link
+              href="/runs"
+              className="text-foreground-muted transition-colors hover:text-foreground"
+            >
+              Runs
+            </Link>
+            <Link
+              href="/backtests"
+              className="text-foreground-muted transition-colors hover:text-foreground"
+            >
+              Backtests
+            </Link>
+          </nav>
+          <SignOutButton />
+        </div>
+      </header>
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">{children}</main>
+    </div>
+  );
+}

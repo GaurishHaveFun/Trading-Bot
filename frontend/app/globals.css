@@ -1,0 +1,240 @@
+@import "tailwindcss";
+
+:root {
+  /* Base surface */
+  --background: #0a0b14;
+
+  /* Glass panels — two intensities. "low" is for decorative/small cards,
+     "high" is for dense tabular data where legibility against blur is the
+     priority. */
+  --glass-low: rgba(255, 255, 255, 0.06);
+  --glass-low-hover: rgba(255, 255, 255, 0.09);
+  --glass-high: rgba(255, 255, 255, 0.1);
+  --glass-high-hover: rgba(255, 255, 255, 0.13);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-border-hover: rgba(255, 255, 255, 0.26);
+
+  /* Text */
+  --foreground: #f5f5f7;
+  --foreground-muted: #a1a1aa;
+
+  /* Financial semantics */
+  --gain: #34d399;
+  --loss: #f87171;
+
+  /* Accent gradient — cyan to violet, the signature "premium fintech" mark */
+  --accent-from: #22d3ee;
+  --accent-via: #67a4f5;
+  --accent-to: #a78bfa;
+  --accent-solid: #38bdf8;
+
+  /* Ambient background blob colors */
+  --blob-blue: #3b82f6;
+  --blob-violet: #8b5cf6;
+  --blob-teal: #14b8a6;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-glass-low: var(--glass-low);
+  --color-glass-high: var(--glass-high);
+  --color-border: var(--glass-border);
+  --color-foreground: var(--foreground);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-gain: var(--gain);
+  --color-loss: var(--loss);
+  --color-accent-from: var(--accent-from);
+  --color-accent-via: var(--accent-via);
+  --color-accent-to: var(--accent-to);
+  --color-accent: var(--accent-solid);
+
+  --font-display: var(--font-jakarta);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  position: relative;
+}
+
+/* ---------- Ambient background blob layer ---------- */
+
+.ambient-background {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ambient-blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(110px);
+  opacity: 0.55;
+  will-change: transform;
+}
+
+.ambient-blob--one {
+  top: -10%;
+  left: -8%;
+  width: 46vw;
+  height: 46vw;
+  background: radial-gradient(circle at 30% 30%, var(--blob-blue), transparent 70%);
+  animation: drift-one 34s ease-in-out infinite;
+}
+
+.ambient-blob--two {
+  top: 20%;
+  right: -12%;
+  width: 40vw;
+  height: 40vw;
+  background: radial-gradient(circle at 60% 40%, var(--blob-violet), transparent 70%);
+  animation: drift-two 40s ease-in-out infinite;
+}
+
+.ambient-blob--three {
+  bottom: -15%;
+  left: 20%;
+  width: 42vw;
+  height: 42vw;
+  background: radial-gradient(circle at 50% 50%, var(--blob-teal), transparent 70%);
+  opacity: 0.4;
+  animation: drift-three 46s ease-in-out infinite;
+}
+
+@keyframes drift-one {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(4vw, 6vh) scale(1.08); }
+}
+
+@keyframes drift-two {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-5vw, 4vh) scale(0.95); }
+}
+
+@keyframes drift-three {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(3vw, -5vh) scale(1.05); }
+}
+
+/* ---------- Glass utilities ---------- */
+
+.glass-panel {
+  background: var(--glass-low);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  border-radius: 1.25rem;
+}
+
+.glass-panel-dense {
+  background: var(--glass-high);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  border-radius: 1.25rem;
+}
+
+.glass-interactive {
+  transition:
+    transform 200ms ease,
+    border-color 200ms ease,
+    box-shadow 200ms ease,
+    background-color 200ms ease;
+}
+
+.glass-interactive:hover {
+  transform: translateY(-2px);
+  border-color: var(--glass-border-hover);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.glass-row {
+  transition:
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.glass-row:hover {
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+/* ---------- Gradient accent utilities ---------- */
+
+.text-gradient-accent {
+  background: linear-gradient(135deg, var(--accent-from), var(--accent-via), var(--accent-to));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.bg-gradient-accent {
+  background: linear-gradient(135deg, var(--accent-from), var(--accent-to));
+}
+
+.border-gradient-accent {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--background), var(--background)) padding-box,
+    linear-gradient(135deg, var(--accent-from), var(--accent-to)) border-box;
+}
+
+/* Visible keyboard focus states everywhere, in the accent gradient. */
+:focus-visible {
+  outline: 2px solid var(--accent-solid);
+  outline-offset: 2px;
+  border-radius: 4px;
+  box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .glass-interactive:hover {
+    transform: none;
+  }
+}
+
+@keyframes gauge-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 8px rgba(167, 139, 250, 0.6), 0 0 16px rgba(34, 211, 238, 0.35);
+  }
+  50% {
+    opacity: 0.85;
+    box-shadow: 0 0 14px rgba(167, 139, 250, 0.9), 0 0 26px rgba(34, 211, 238, 0.55);
+  }
+}
+
+@keyframes panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.panel-enter {
+  animation: panel-enter 400ms ease-out both;
+}

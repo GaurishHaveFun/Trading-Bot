@@ -17,7 +17,14 @@ from screener.data.factory import (
 )
 from screener.data.schwab import SchwabAuth
 from screener.models import Bar, BacktestResult, FundamentalsSnapshot, RuleResult, ScreenerRun, Signal
-from screener.output import write_backtest_report, write_report, write_run, write_ticker_report
+from screener.output import (
+    write_backtest_report,
+    write_backtest_to_db,
+    write_report,
+    write_run,
+    write_run_to_db,
+    write_ticker_report,
+)
 from screener.rules import RuleEngine, evaluate_quality_gate
 from screener.utils.logging import configure_logging, get_logger
 
@@ -84,6 +91,7 @@ async def run_screener(*, check_market_hours: bool = False) -> ScreenerRun | Non
     results = await asyncio.gather(*[fetch_one(s) for s in symbols], return_exceptions=True)
 
     signals: list[Signal] = []
+    signal_bars: dict[str, list[Bar]] = {}
     run_ts = datetime.now(timezone.utc)
     quality_gate_excluded = 0
 
@@ -118,6 +126,7 @@ async def run_screener(*, check_market_hours: bool = False) -> ScreenerRun | Non
             snapshot=snapshot,
         )
         signals.append(signal)
+        signal_bars[symbol] = bars
 
     signals.sort(key=lambda s: s.score, reverse=True)
 
@@ -132,6 +141,12 @@ async def run_screener(*, check_market_hours: bool = False) -> ScreenerRun | Non
     report_path = write_report(
         run, rule_descriptions={r.name: r.description for r in rules_config.rules}
     )
+
+    if settings.database_url:
+        try:
+            await write_run_to_db(run, bars_by_ticker=signal_bars, database_url=settings.database_url)
+        except Exception as exc:
+            logger.warning("db_write_failed", error=str(exc))
 
     above = [s for s in signals if s.score >= settings.alert_threshold]
     top5 = signals[:5]
@@ -292,6 +307,12 @@ async def run_backtest_cli(days: int, holding_days: int) -> None:
 
     result: BacktestResult = await run_backtest(days=days, holding_days=holding_days)
     report_path = write_backtest_report(result)
+
+    if settings.database_url:
+        try:
+            await write_backtest_to_db(result, database_url=settings.database_url)
+        except Exception as exc:
+            logger.warning("db_write_failed", error=str(exc))
 
     delta_pp = result.avg_return_pct - result.baseline_avg_return_pct
     sign = "+" if delta_pp >= 0 else ""
