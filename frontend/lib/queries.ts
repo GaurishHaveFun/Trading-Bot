@@ -37,6 +37,27 @@ function numOrNull(value: unknown): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
+/**
+ * The Neon HTTP driver returns Postgres `timestamp`/`timestamptz`/`date`
+ * columns as native JS `Date` objects at runtime, even though our types
+ * declare these fields as `string`. Interpolating a `Date` into a template
+ * literal (e.g. a URL) silently calls its default `.toString()` (producing
+ * something like "Sun Jul 19 2026 23:34:05 GMT+0000 (Coordinated Universal
+ * Time)") instead of `.toISOString()`, which then fails downstream when
+ * used as a query parameter. Route every date/timestamp field through this
+ * helper so callers always get a real ISO-8601 string, regardless of
+ * whether the driver handed back a Date or (defensively) already a string.
+ */
+function toIso(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+function toIsoOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return toIso(value);
+}
+
 // ---------------------------------------------------------------------------
 // Row mappers — coerce raw driver rows into our typed shapes.
 // ---------------------------------------------------------------------------
@@ -44,11 +65,11 @@ function numOrNull(value: unknown): number | null {
 function mapRun(row: Record<string, unknown>): RunRow {
   return {
     id: num(row.id),
-    run_timestamp: String(row.run_timestamp),
+    run_timestamp: toIso(row.run_timestamp),
     universe: (row.universe as string) ?? null,
     alert_threshold: numOrNull(row.alert_threshold),
     signal_count: numOrNull(row.signal_count),
-    created_at: (row.created_at as string) ?? null,
+    created_at: toIsoOrNull(row.created_at),
   };
 }
 
@@ -57,7 +78,7 @@ function mapSignal(row: Record<string, unknown>): SignalRow {
     id: num(row.id),
     run_id: num(row.run_id),
     ticker: String(row.ticker),
-    timestamp: String(row.timestamp),
+    timestamp: toIso(row.timestamp),
     score: num(row.score),
     rules_passed: numOrNull(row.rules_passed),
     rules_total: numOrNull(row.rules_total),
@@ -79,7 +100,7 @@ function mapRuleResult(row: Record<string, unknown>): RuleResultRow {
 function mapBar(row: Record<string, unknown>): BarRow {
   return {
     ticker: String(row.ticker),
-    timestamp: String(row.timestamp),
+    timestamp: toIso(row.timestamp),
     open: num(row.open),
     high: num(row.high),
     low: num(row.low),
@@ -91,13 +112,13 @@ function mapBar(row: Record<string, unknown>): BarRow {
 function mapBacktest(row: Record<string, unknown>): BacktestRow {
   return {
     id: num(row.id),
-    created_at: String(row.created_at),
+    created_at: toIso(row.created_at),
     universe: (row.universe as string) ?? null,
     holding_days: numOrNull(row.holding_days),
     alert_threshold: numOrNull(row.alert_threshold),
     lookback_days: numOrNull(row.lookback_days),
-    start_date: (row.start_date as string) ?? null,
-    end_date: (row.end_date as string) ?? null,
+    start_date: toIsoOrNull(row.start_date),
+    end_date: toIsoOrNull(row.end_date),
     total_signals: numOrNull(row.total_signals),
     wins: numOrNull(row.wins),
     losses: numOrNull(row.losses),
@@ -115,12 +136,12 @@ function mapBacktestTrade(row: Record<string, unknown>): BacktestTradeRow {
     id: num(row.id),
     backtest_id: num(row.backtest_id),
     ticker: String(row.ticker),
-    signal_date: String(row.signal_date),
+    signal_date: toIso(row.signal_date),
     score: numOrNull(row.score),
     rules_passed: numOrNull(row.rules_passed),
     rules_total: numOrNull(row.rules_total),
     buy_close: numOrNull(row.buy_close),
-    sell_date: (row.sell_date as string) ?? null,
+    sell_date: toIsoOrNull(row.sell_date),
     sell_close: numOrNull(row.sell_close),
     return_pct: numOrNull(row.return_pct),
     win: row.win === null || row.win === undefined ? null : Boolean(row.win),
@@ -226,12 +247,22 @@ export async function listRuns(limit = 50): Promise<RunListItem[]> {
   });
 }
 
-/** One specific run by exact run_timestamp match, with nested signals + rule_results. */
+/**
+ * One specific run by run_timestamp match, with nested signals + rule_results.
+ *
+ * `run_timestamp` is stored with microsecond precision, but the value we
+ * hand out to the browser (via `toIso` above, and JS `Date`/`toISOString`
+ * generally) only has millisecond precision — the sub-millisecond digits
+ * are truncated. An exact string/timestamptz equality would therefore
+ * silently fail to find the row for almost every run. Truncate the stored
+ * column to milliseconds before comparing so it matches what round-trips
+ * through the browser.
+ */
 export async function getRun(timestamp: string): Promise<RunWithSignals | null> {
   const rows = await sql`
     SELECT id, run_timestamp, universe, alert_threshold, signal_count, created_at
     FROM runs
-    WHERE run_timestamp = ${timestamp}
+    WHERE date_trunc('milliseconds', run_timestamp) = ${timestamp}::timestamptz
     LIMIT 1
   `;
   if (rows.length === 0) return null;
@@ -269,7 +300,7 @@ export async function getTickerHistory(ticker: string): Promise<TickerHistory> {
     return {
       signal: mapSignal(r),
       run: {
-        run_timestamp: String(r.run_run_timestamp),
+        run_timestamp: toIso(r.run_run_timestamp),
         universe: (r.run_universe as string) ?? null,
         alert_threshold: numOrNull(r.run_alert_threshold),
       },
