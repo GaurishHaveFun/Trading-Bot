@@ -1,6 +1,7 @@
 import Link from "next/link";
 import PriceChart from "@/components/PriceChart";
 import PriceStats from "@/components/PriceStats";
+import RefreshButton from "@/components/RefreshButton";
 import ScoreGauge from "@/components/ScoreGauge";
 import { getTickerHistory } from "@/lib/queries";
 import type { TickerHistory } from "@/lib/types";
@@ -48,6 +49,10 @@ export default async function TickerPage({
       {!error && history && (
         <>
           <div className="glass-panel panel-enter p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-medium text-foreground-muted">Price Chart</h2>
+              <RefreshButton />
+            </div>
             <PriceChart bars={history.bars} />
           </div>
 

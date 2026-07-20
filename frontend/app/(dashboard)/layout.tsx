@@ -8,8 +8,8 @@ export default function DashboardLayout({
 }>) {
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="sticky top-0 z-10 px-4 pt-4">
-        <div className="glass-panel mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+      <header className="glass-header-bar sticky top-0 z-10 px-4 py-3">
+        <div className="mx-auto flex max-w-6xl items-center justify-between">
           <nav className="flex items-center gap-6 text-sm font-medium">
             <Link href="/" className="font-display text-base font-semibold text-foreground">
               Screener
