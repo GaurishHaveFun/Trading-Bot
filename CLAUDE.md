@@ -123,6 +123,22 @@ uv run pytest -m "not integration"           # skip network tests
 uv run uvicorn screener.api.app:app --reload --port 8000  # start the read-only HTTP API (GET /health, /quotes, /losers)
 ```
 
+## Deploying to Render
+
+**First-time deploy:**
+1. Push `render.yaml` (repo root) to GitHub, then use Render's "New from Blueprint" pointed at this repo.
+2. Fill in `SCHWAB_APP_KEY`/`SCHWAB_APP_SECRET` in the Render dashboard. Leave `SCHWAB_TOKEN_JSON` blank until the first reauth run.
+3. Copy the service ID from the dashboard URL (`srv-xxxxx`) and generate a Render API key (account settings -> API Keys). Put both into local `backend/.env` as `RENDER_SERVICE_ID`/`RENDER_API_KEY`.
+4. Run the reauth script once (below) to populate the token and trigger the first real deploy.
+
+**Weekly maintenance:** Schwab refresh tokens expire ~7 days. Whenever Schwab calls start failing with auth errors, run:
+
+```bash
+cd backend && uv run python scripts/schwab_reauth.py
+```
+
+One command: opens a browser for Schwab login, pushes the refreshed token to Render as `SCHWAB_TOKEN_JSON`, and triggers a redeploy. The API's startup hook (`screener.api.app:lifespan`) writes that env var to `schwab_token_path` on boot, since Render's free tier has an ephemeral filesystem.
+
 ## Definition of Done (Phase 1)
 
 - `uv run pytest` passes (all non-integration tests).

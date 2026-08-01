@@ -24,6 +24,9 @@ pattern rather than reimplementing anything."""
 from __future__ import annotations
 
 import asyncio
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 import yfinance as yf
 from fastapi import FastAPI, Query
@@ -38,7 +41,30 @@ from screener.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-app = FastAPI(title="Trading Bot API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup hook: on Render's ephemeral filesystem there is no
+    `.cache/schwab_token.json` on disk after a deploy, so the weekly-refreshed
+    token is instead pushed into the `SCHWAB_TOKEN_JSON` env var (see
+    `backend/scripts/schwab_reauth.py`) and materialized to disk here, before
+    any request handler can reach for a Schwab client. Reads the env var
+    directly (not via `Settings` — it's a secret blob, not config) and calls
+    `get_settings()` at call time (not import time) so tests can monkeypatch
+    it."""
+    token_json = os.environ.get("SCHWAB_TOKEN_JSON", "").strip()
+    if token_json:
+        settings = get_settings()
+        token_path = Path(settings.schwab_token_path)
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(token_json)
+        logger.info("schwab_token_materialized_from_env", token_path=str(token_path))
+    else:
+        logger.debug("schwab_token_env_not_set")
+    yield
+
+
+app = FastAPI(title="Trading Bot API", lifespan=lifespan)
 
 _QUOTE_SEMAPHORE = asyncio.Semaphore(10)
 _DEFAULT_LOSERS_LIMIT = 20

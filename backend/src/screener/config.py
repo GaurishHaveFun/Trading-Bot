@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     universe: str = "losers"  # "static" | "losers"
     watchlist_path: str = "config/watchlist.yaml"
     database_url: str = ""
+    render_api_key: str = ""
+    render_service_id: str = ""
 
 
 class RuleConfig(BaseModel):
