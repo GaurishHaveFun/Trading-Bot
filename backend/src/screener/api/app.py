@@ -83,6 +83,7 @@ class LoserOut(BaseModel):
     price: float | None
     change_pct: float | None
     market_cap: float | None
+    sector: str | None
 
 
 def _fetch_quote_info(symbol: str) -> dict | None:
@@ -210,12 +211,14 @@ async def get_losers(limit: int = Query(_DEFAULT_LOSERS_LIMIT, ge=1, le=100)) ->
         price = None
         if info is not None:
             price = info.get("regularMarketPrice") or info.get("currentPrice")
+        sector = meta.get("sector") or (info.get("sector") if info else None)
         results.append(
             LoserOut(
                 ticker=ticker,
                 price=price,
                 change_pct=meta.get("change_pct"),
                 market_cap=meta.get("market_cap"),
+                sector=sector,
             )
         )
     return results

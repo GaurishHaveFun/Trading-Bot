@@ -38,6 +38,7 @@ export default function WatchlistTable({ losers }: { losers: LoserRow[] }) {
         <thead className="border-b border-white/10">
           <tr>
             <th className="px-4 py-3 text-left font-medium text-foreground-muted">Ticker</th>
+            <th className="px-4 py-3 text-left font-medium text-foreground-muted">Sector</th>
             <th className="px-4 py-3 text-right font-medium text-foreground-muted">Price</th>
             <th className="px-4 py-3 text-right font-medium text-foreground-muted">Change %</th>
             <th className="px-4 py-3 text-right font-medium text-foreground-muted">Mkt cap</th>
@@ -48,6 +49,7 @@ export default function WatchlistTable({ losers }: { losers: LoserRow[] }) {
           {losers.map((l) => (
             <tr key={l.ticker} className="glass-row">
               <td className="px-4 py-3 font-mono font-medium text-foreground">{l.ticker}</td>
+              <td className="px-4 py-3 text-left text-foreground-muted">{l.sector ?? "—"}</td>
               <td className="px-4 py-3 text-right font-mono tabular-nums">
                 {formatCurrency(l.price)}
               </td>

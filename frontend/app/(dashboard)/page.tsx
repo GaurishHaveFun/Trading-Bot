@@ -1,8 +1,9 @@
+import AccountValueChart from "@/components/AccountValueChart";
 import PortfolioSummary from "@/components/PortfolioSummary";
 import PositionsTable from "@/components/PositionsTable";
 import TradesList from "@/components/TradesList";
 import TradeTicket from "@/components/TradeTicket";
-import { getAccount, getPositions, getTrades } from "@/lib/paper";
+import { getAccount, getAccountHistory, getPositions, getTrades, recordAccountSnapshot } from "@/lib/paper";
 import { getQuotes } from "@/lib/quotes";
 import type { PaperAccountRow, PaperPositionRow, PaperTradeRow, QuoteRow } from "@/lib/types";
 
@@ -65,6 +66,12 @@ export default async function PortfolioPage() {
   const unrealizedPnl = marketValue - costBasis;
   const unrealizedPnlPct = costBasis > 0 ? (unrealizedPnl / costBasis) * 100 : 0;
 
+  // Snapshot the account's current value on every page render — see
+  // lib/paper.ts recordAccountSnapshot() docstring for why this is done here
+  // rather than inside buyStock/sellStock.
+  await recordAccountSnapshot(totalValue, account.cash_balance, marketValue);
+  const history = await getAccountHistory();
+
   return (
     <div className="flex flex-col gap-6">
       <PortfolioSummary
@@ -73,6 +80,11 @@ export default async function PortfolioPage() {
         unrealizedPnl={unrealizedPnl}
         unrealizedPnlPct={unrealizedPnlPct}
       />
+
+      <section className="glass-panel panel-enter p-4 sm:p-6">
+        <h2 className="mb-3 font-display text-lg font-semibold text-foreground">Account value over time</h2>
+        <AccountValueChart history={history} />
+      </section>
 
       <section className="glass-panel panel-enter p-4 sm:p-6">
         <h2 className="mb-3 font-display text-lg font-semibold text-foreground">Buy</h2>

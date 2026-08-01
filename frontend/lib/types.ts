@@ -122,6 +122,15 @@ export interface PaperTradeRow {
   executed_at: string;
 }
 
+/** A snapshot of total account value, for the account-value-over-time chart. */
+export interface PaperAccountHistoryRow {
+  id: number;
+  total_value: number;
+  cash_balance: number;
+  positions_value: number;
+  recorded_at: string;
+}
+
 // ---------------------------------------------------------------------------
 // Screener FastAPI client types (backend/src/screener/api/app.py). These come
 // back as real JSON numbers from FastAPI, not Postgres numeric-as-string, so
@@ -143,4 +152,5 @@ export interface LoserRow {
   price: number;
   change_pct: number;
   market_cap: number;
+  sector: string | null;
 }

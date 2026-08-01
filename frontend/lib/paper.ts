@@ -5,7 +5,7 @@ import { sql } from "./db";
 import { ensurePaperSchema, ensureSeededAccount } from "./paper-schema";
 import { getQuotes } from "./quotes";
 import { num, numOrNull } from "./queries";
-import type { PaperAccountRow, PaperPositionRow, PaperTradeRow } from "./types";
+import type { PaperAccountHistoryRow, PaperAccountRow, PaperPositionRow, PaperTradeRow } from "./types";
 
 /**
  * Read queries + server actions for the single-user paper-trading account.
@@ -66,6 +66,16 @@ function mapTrade(row: Record<string, unknown>): PaperTradeRow {
   };
 }
 
+function mapAccountHistory(row: Record<string, unknown>): PaperAccountHistoryRow {
+  return {
+    id: num(row.id),
+    total_value: num(row.total_value),
+    cash_balance: num(row.cash_balance),
+    positions_value: num(row.positions_value),
+    recorded_at: toIso(row.recorded_at),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Read queries
 // ---------------------------------------------------------------------------
@@ -105,6 +115,40 @@ export async function getTrades(limit = 50): Promise<PaperTradeRow[]> {
     LIMIT ${limit}
   `;
   return rows.map((r) => mapTrade(r as Record<string, unknown>));
+}
+
+/**
+ * Most recent account-value snapshots, chronological ascending (oldest
+ * first) for charting.
+ */
+export async function getAccountHistory(limit = 500): Promise<PaperAccountHistoryRow[]> {
+  await ensurePaperSchema();
+  const rows = await sql`
+    SELECT id, total_value, cash_balance, positions_value, recorded_at
+    FROM paper_account_history
+    ORDER BY recorded_at ASC
+    LIMIT ${limit}
+  `;
+  return rows.map((r) => mapAccountHistory(r as Record<string, unknown>));
+}
+
+/**
+ * Records one account-value snapshot. Called on every portfolio page render
+ * (see app/(dashboard)/page.tsx) rather than from buyStock/sellStock — see
+ * that call site for the rationale. No debouncing/deduplication: this is a
+ * personal single-user app, so table growth from repeated visits is
+ * negligible.
+ */
+export async function recordAccountSnapshot(
+  totalValue: number,
+  cashBalance: number,
+  positionsValue: number,
+): Promise<void> {
+  await ensurePaperSchema();
+  await sql`
+    INSERT INTO paper_account_history (total_value, cash_balance, positions_value, recorded_at)
+    VALUES (${totalValue}, ${cashBalance}, ${positionsValue}, now())
+  `;
 }
 
 // ---------------------------------------------------------------------------

@@ -68,6 +68,21 @@ export async function ensurePaperSchema(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_paper_trades_executed_at
     ON paper_trades (executed_at DESC)
   `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS paper_account_history (
+      id SERIAL PRIMARY KEY,
+      total_value NUMERIC NOT NULL,
+      cash_balance NUMERIC NOT NULL,
+      positions_value NUMERIC NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_paper_account_history_recorded_at
+    ON paper_account_history (recorded_at)
+  `;
 }
 
 /**

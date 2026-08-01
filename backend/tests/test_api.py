@@ -95,19 +95,20 @@ def test_quotes_skips_symbol_with_empty_info():
 
 def test_merge_losers_quotes_dedupes_schwab_wins_and_ranks_and_caps():
     yfinance_quotes = {
-        "AAA": {"change_pct": -5.0, "market_cap": 1e11},
-        "BBB": {"change_pct": -2.0, "market_cap": 2e11},  # also in schwab -> schwab wins
-        "CCC": {"change_pct": -8.0, "market_cap": 3e11},
+        "AAA": {"change_pct": -5.0, "market_cap": 1e11, "sector": "Technology"},
+        "BBB": {"change_pct": -2.0, "market_cap": 2e11, "sector": "Healthcare"},  # also in schwab -> schwab wins
+        "CCC": {"change_pct": -8.0, "market_cap": 3e11, "sector": "Financials"},
     }
     schwab_quotes = {
-        "BBB": {"change_pct": -9.0, "market_cap": 2.5e11},  # overrides yfinance's BBB
-        "DDD": {"change_pct": -1.0, "market_cap": 4e11},
+        "BBB": {"change_pct": -9.0, "market_cap": 2.5e11, "sector": "Health Care"},  # overrides yfinance's BBB
+        "DDD": {"change_pct": -1.0, "market_cap": 4e11, "sector": "Energy"},
     }
 
     ranked = merge_losers_quotes(yfinance_quotes, schwab_quotes, limit=3)
 
     assert [t for t, _ in ranked] == ["BBB", "CCC", "AAA"]
     assert ranked[0][1]["change_pct"] == -9.0  # schwab's value won for BBB
+    assert ranked[0][1]["sector"] == "Health Care"  # schwab's value won for BBB
 
 
 def test_merge_losers_quotes_respects_limit():
@@ -123,14 +124,14 @@ def test_merge_losers_quotes_respects_limit():
 def test_losers_merges_dedupes_and_respects_limit():
     yfinance_universe = _FakeUniverse(
         quotes={
-            "AAA": {"change_pct": -5.0, "market_cap": 1e11},
-            "BBB": {"change_pct": -2.0, "market_cap": 2e11},
+            "AAA": {"change_pct": -5.0, "market_cap": 1e11, "sector": "Technology"},
+            "BBB": {"change_pct": -2.0, "market_cap": 2e11, "sector": "Healthcare"},
         }
     )
     schwab_universe = _FakeUniverse(
         quotes={
-            "BBB": {"change_pct": -9.0, "market_cap": 2.5e11},
-            "CCC": {"change_pct": -1.0, "market_cap": 3e11},
+            "BBB": {"change_pct": -9.0, "market_cap": 2.5e11, "sector": "Health Care"},
+            "CCC": {"change_pct": -1.0, "market_cap": 3e11, "sector": "Financials"},
         }
     )
 
@@ -146,11 +147,45 @@ def test_losers_merges_dedupes_and_respects_limit():
     assert body[0]["change_pct"] == -9.0  # schwab-sourced value won
     assert body[0]["market_cap"] == 2.5e11
     assert body[0]["price"] == 42.0
+    assert body[0]["sector"] == "Health Care"  # schwab-sourced value won
+
+
+def test_losers_falls_back_to_info_sector_when_meta_sector_is_none():
+    # Schwab wins the merge for BBB but has no sector data (sector: None) --
+    # the response should fall back to the sector from the freshly-fetched
+    # yfinance `info` dict rather than surfacing None.
+    yfinance_universe = _FakeUniverse(
+        quotes={
+            "BBB": {"change_pct": -2.0, "market_cap": 2e11, "sector": "Healthcare"},
+        }
+    )
+    schwab_universe = _FakeUniverse(
+        quotes={
+            "BBB": {"change_pct": -9.0, "market_cap": 2.5e11, "sector": None},
+        }
+    )
+
+    def fake_fetch_info(symbol: str):
+        return {"regularMarketPrice": 42.0, "sector": "Technology"}
+
+    patchers = _patch_universes(yfinance_universe, schwab_universe)
+    with patchers[0], patchers[1], patchers[2], \
+         patch("screener.api.app._fetch_quote_info", side_effect=fake_fetch_info):
+        resp = client.get("/losers", params={"limit": 2})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["ticker"] == "BBB"
+    assert body[0]["change_pct"] == -9.0  # schwab-sourced value still wins
+    assert body[0]["market_cap"] == 2.5e11  # schwab-sourced value still wins
+    assert body[0]["price"] == 42.0
+    assert body[0]["sector"] == "Technology"  # fell back to info's sector
 
 
 def test_losers_falls_back_to_yfinance_only_when_schwab_raises():
     yfinance_universe = _FakeUniverse(
-        quotes={"AAA": {"change_pct": -5.0, "market_cap": 1e11}}
+        quotes={"AAA": {"change_pct": -5.0, "market_cap": 1e11, "sector": "Technology"}}
     )
     schwab_universe = _FakeUniverse(error=RuntimeError("no schwab token"))
 
@@ -163,3 +198,4 @@ def test_losers_falls_back_to_yfinance_only_when_schwab_raises():
     body = resp.json()
     assert len(body) == 1
     assert body[0]["ticker"] == "AAA"
+    assert body[0]["sector"] == "Technology"
