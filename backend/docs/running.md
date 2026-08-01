@@ -14,7 +14,7 @@ cp .env.example .env     # fill in Schwab credentials below if you want live Sch
 
 - **Bars** (`_FallbackBarProvider`): pure try-Schwab-then-fallback, per call. Any Schwab exception for a given symbol/call falls back to yfinance for that call only — a transient Schwab failure for one symbol never takes down the whole run.
 - **Losers universe** (`_MergedLosersUniverse`): NOT a strict either/or. See section 3 below — when Schwab is healthy its candidates are *unioned* with yfinance's, not swapped in for them.
-- **Fundamentals** (`_MergedFundamentalsProvider`): also a merge, not a strict either/or — yfinance is always the base snapshot, with 2 specific Schwab fields layered on top when available. See section 4 below.
+- **Fundamentals** (`_MergedFundamentalsProvider`): also a merge, not a strict either/or — yfinance is always the base snapshot, with 2 specific Schwab fields layered on top when available.
 - **`quote_for`** (single-symbol lookup used by `--ticker` debug mode): pure try-Schwab-then-fallback, same as bars — this one codepath is intentionally *not* part of the merge semantics above.
 
 So: run it with an empty `.env` and you still get a fully working screener on yfinance alone (graceful degradation, not a hard requirement). Configure Schwab (below) to get real-time movers data, two additional fundamentals fields, and the pre-run market-hours gate.
@@ -51,12 +51,12 @@ So: run it with an empty `.env` and you still get a fully working screener on yf
 uv run python -m screener.main --once
 ```
 
-Runs the full pipeline exactly once: builds the universe → fetches bars → fetches fundamentals and applies the quality gate → scores every remaining symbol → writes `output/runs/run_<UTC_TIMESTAMP>.json` and `output/reports/report_<UTC_TIMESTAMP>.pdf` → exits. This is what a cron/scheduled invocation actually calls once a day (with one extra gate — see section 5). See section 6 for details on the PDF report.
+Runs the full pipeline exactly once: builds the universe → fetches bars and fundamentals → scores every remaining symbol → writes `output/runs/run_<UTC_TIMESTAMP>.json` and `output/reports/report_<UTC_TIMESTAMP>.pdf` → exits. This is what a cron/scheduled invocation actually calls once a day (with one extra gate — see section 4). See section 5 for details on the PDF report.
 
-Console output is structured JSON logs (one line per event: `screener_start`, `fetching_bars`, `insufficient_bars` for skipped tickers, `quality_gate_failed` for tickers excluded by the fundamentals gate, `run_written`, `screener_complete`). The `screener_complete` line summarizes the run:
+Console output is structured JSON logs (one line per event: `screener_start`, `fetching_bars`, `insufficient_bars` for skipped tickers, `run_written`, `screener_complete`). The `screener_complete` line summarizes the run:
 
 ```json
-{"total_symbols": 18, "signals_evaluated": 15, "above_threshold": 0, "quality_gate_excluded": 2, "top5": ["SYF=0.56", ...], "output": "output/runs/run_..."}
+{"total_symbols": 18, "signals_evaluated": 15, "above_threshold": 0, "top5": ["SYF=0.56", ...], "output": "output/runs/run_..."}
 ```
 
 `above_threshold` is how many symbols actually crossed `alert_threshold` and would count as a fired alert. It's normal for this to be `0` on any given day — the rule set is a strict multi-factor blend, not every ticker will line up on all 7 rules at once.
@@ -67,7 +67,7 @@ Console output is structured JSON logs (one line per event: `screener_start`, `f
 uv run python -m screener.main --ticker NVDA
 ```
 
-Fetches and evaluates just that ticker (bars + fundamentals, quality-gated the same as `--once`) and prints a readable per-rule breakdown to the console (score, which rules passed/failed, and the indicator values behind each rule). If the ticker fails the quality gate, it prints which metrics failed and stops there — no rule evaluation, no PDF. Otherwise it does not write a JSON file, but does write a single-ticker PDF report to `output/reports/report_<TICKER>_<UTC>.pdf` (path printed after the breakdown). Use this to sanity-check why a specific stock did or didn't score well. Like `--once`, this is a manual invocation and is never gated on market hours (see section 5).
+Fetches and evaluates just that ticker (bars + fundamentals) and prints a readable per-rule breakdown to the console (score, which rules passed/failed, and the indicator values behind each rule). It does not write a JSON file, but does write a single-ticker PDF report to `output/reports/report_<TICKER>_<UTC>.pdf` (path printed after the breakdown). Use this to sanity-check why a specific stock did or didn't score well. Like `--once`, this is a manual invocation and is never gated on market hours (see section 4).
 
 ### `--backtest` — historical backtest of the current rules
 
@@ -90,7 +90,7 @@ May take up to ~60 seconds on a cold cache (16 symbols × ~500 calendar days of 
 uv run python -m screener.main
 ```
 
-Starts an APScheduler loop that calls the same pipeline as `--once` on the cron schedule defined in `config/rules.yaml` (`schedule.on`, `schedule.timezone` — currently `0 16 * * 1-5` / `America/New_York`, i.e. 4pm ET on weekdays). Blocks until you send `SIGINT`/`SIGTERM` (Ctrl-C). Unlike `--once`/`--ticker`, every scheduled tick is gated on the equity market actually being open — see section 5.
+Starts an APScheduler loop that calls the same pipeline as `--once` on the cron schedule defined in `config/rules.yaml` (`schedule.on`, `schedule.timezone` — currently `0 16 * * 1-5` / `America/New_York`, i.e. 4pm ET on weekdays). Blocks until you send `SIGINT`/`SIGTERM` (Ctrl-C). Unlike `--once`/`--ticker`, every scheduled tick is gated on the equity market actually being open — see section 4.
 
 There's also a fifth, setup-only mode, `--auth-schwab`, covered in section 1 above — it doesn't run the screener at all, just the one-time Schwab OAuth flow.
 
@@ -124,26 +124,13 @@ The condition is `in_watchlist or is_chip`. `in_watchlist` is membership in the 
 
 One caveat, now with a Schwab wrinkle: `industry` is reliably present on yfinance `.info` lookups (used by `--ticker` and the watchlist-down-today check) but is often missing on yfinance's `day_losers` screen quotes, and Schwab's quote/reference schema has **no** `industry`/`sector` field at all (confirmed against the real Schwab OpenAPI spec — `ReferenceEquity` simply doesn't carry it). For Schwab-sourced candidates, `screener.data.factory`'s merge layer best-effort backfills `industry`/`sector` with a yfinance `.info` lookup before the union happens; if that backfill also comes up empty, `is_chip` just evaluates to `False` and the symbol falls back to the `in_watchlist` half of the rule.
 
-## 4. The fundamentals quality gate
+### Fundamentals field sourcing
 
-Before any ticker reaches rule scoring, it passes through a hard pass/fail quality gate (`screener.rules.quality_gate.evaluate_quality_gate`) over 6 balance-sheet-quality metrics defined in `config/quality_screen.yaml`:
+**As of the Schwab integration:** yfinance supplies the full `FundamentalsSnapshot` and is always the base/fallback snapshot. When `data_provider=schwab`, `_MergedFundamentalsProvider` additionally layers 2 fields on top, per-field, whenever Schwab provides a non-`None` value for them: `gross_margin`, `net_margin` — pulled from Schwab's `/marketdata/v1/instruments?projection=fundamental` endpoint (`grossMarginTTM`/`netProfitMarginTTM`; these come back as percentages and are divided by 100 to match this project's 0–1 ratio convention). The other fields — `fcf_5y_cumulative`, `interest_coverage`, `ocf_ni_ratio`, `share_dilution_5y` — always come from yfinance regardless of `data_provider`. For `fcf_5y_cumulative`/`ocf_ni_ratio`/`share_dilution_5y` this is a structural Schwab limitation: they need multi-year income-statement/cash-flow history, and Schwab's Trader API only exposes a current/TTM snapshot with no historical time series, confirmed by live testing rather than assumed. `interest_coverage` is different — Schwab's `fundamental` section does return an `interestCoverage` field — but it's an intentional exclusion, not a structural one; see the caveat below.
 
-| Metric | Threshold |
-|---|---|
-| `fcf_5y_cumulative` | must be ≥ `0.0` |
-| `interest_coverage` | must be ≥ `2.0` |
-| `gross_margin` | must be ≥ `0.15` |
-| `ocf_ni_ratio` | must be ≥ `0.7` |
-| `net_margin` | must be ≥ `0.05` |
-| `share_dilution_5y` | must be ≤ `0.20` |
+**Known caveat (why `interest_coverage` is yfinance-only):** live testing found Schwab's `interestCoverage` field returned exactly `0.0` for both AAPL and MSFT, which doesn't look like a real value for either company (neither is a zero-coverage business) and looks like a systematic Schwab data artifact. `_MergedFundamentalsProvider._SCHWAB_FIELDS` therefore excludes `interest_coverage` entirely, so the merged snapshot's `interest_coverage` always comes from yfinance, unaffected by this Schwab data issue. `SchwabFundamentalsProvider` still computes `interest_coverage` in its own (unmerged) snapshot and still logs an `interest_coverage_suspicious_zero` warning whenever the raw Schwab value is exactly `0.0`, so the anomaly stays visible in the logs for diagnostic purposes.
 
-A ticker that fails *any* one of these is excluded before rule scoring — it never gets a `Signal`, never appears in the output JSON, and is counted in the `quality_gate_excluded` field of the `screener_complete` log line. A `None` metric (missing or uncomputable) is never treated as a failure for that check — it's simply skipped, same "don't fail on missing data" convention used elsewhere (e.g. the <200-bar skip).
-
-**Source of these 6 fields, as of the Schwab integration:** yfinance supplies all 6 and is always the base/fallback snapshot. When `data_provider=schwab`, `_MergedFundamentalsProvider` additionally layers 2 fields on top, per-field, whenever Schwab provides a non-`None` value for them: `gross_margin`, `net_margin` — pulled from Schwab's `/marketdata/v1/instruments?projection=fundamental` endpoint (`grossMarginTTM`/`netProfitMarginTTM`; these come back as percentages and are divided by 100 to match this project's 0–1 ratio convention). The other 4 metrics — `fcf_5y_cumulative`, `interest_coverage`, `ocf_ni_ratio`, `share_dilution_5y` — always come from yfinance regardless of `data_provider`. For `fcf_5y_cumulative`/`ocf_ni_ratio`/`share_dilution_5y` this is a structural Schwab limitation: they need multi-year income-statement/cash-flow history, and Schwab's Trader API only exposes a current/TTM snapshot with no historical time series, confirmed by live testing rather than assumed. `interest_coverage` is different — Schwab's `fundamental` section does return an `interestCoverage` field — but it's an intentional exclusion, not a structural one; see the caveat below.
-
-**Known caveat (why `interest_coverage` is yfinance-only):** live testing found Schwab's `interestCoverage` field returned exactly `0.0` for both AAPL and MSFT, which doesn't look like a real value for either company (neither is a zero-coverage business) and looks like a systematic Schwab data artifact. Because the merge rule only checks "is this field non-`None`", a bogus `0.0` would otherwise silently override yfinance's real value — and since `min_interest_coverage: 2.0` is well above zero, that would incorrectly quality-gate out tickers on this metric alone whenever `data_provider=schwab`. `_MergedFundamentalsProvider._SCHWAB_FIELDS` therefore excludes `interest_coverage` entirely, so the merged snapshot's `interest_coverage` always comes from yfinance, unaffected by this Schwab data issue. `SchwabFundamentalsProvider` still computes `interest_coverage` in its own (unmerged) snapshot and still logs an `interest_coverage_suspicious_zero` warning whenever the raw Schwab value is exactly `0.0`, so the anomaly stays visible in the logs for diagnostic purposes even though it no longer reaches the quality gate.
-
-## 5. The pre-run market-hours gate
+## 4. The pre-run market-hours gate
 
 Scheduled (cron) runs — the bare `uv run python -m screener.main` invocation from section 2 — are gated on the equity market actually being open today. Before each scheduled tick fires the pipeline, `screener.scheduler` calls `run_screener(check_market_hours=True)`, which asks `screener.data.schwab.market_hours.is_equity_market_open` whether the equity market is open right now (via Schwab's `get_market_hours` endpoint). If it reports closed — a weekend, a market holiday — the run is skipped entirely and logged as `market_closed_skip_run`, rather than scoring stale/pre-market data.
 
@@ -151,7 +138,7 @@ Scheduled (cron) runs — the bare `uv run python -m screener.main` invocation f
 
 **Fail-open, deliberately:** any failure in the market-hours check itself — Schwab down, auth expired, an unexpected response shape, or simply `data_provider != "schwab"` (no Schwab client to ask) — defaults to `True` (market open, allow the run). The reasoning baked into the code: a missed scheduled run is worse than one unnecessary run on a day the market happened to be closed. This was live-verified on a real Sunday against the real Schwab API — the check correctly returned "closed" and the scheduled run was skipped.
 
-## 6. Where output goes
+## 5. Where output goes
 
 Every `--once` run (and every scheduler tick) writes to `output/runs/run_<UTC_ISO>.json`, matching the locked schema in `CLAUDE.md`. Nothing is overwritten — each run gets its own timestamped file.
 
@@ -161,13 +148,13 @@ Each `--once` run (and scheduler tick) now also writes a human-readable PDF repo
 
 Note: the PDF's displayed "Run timestamp" is shown in US Eastern time (`America/New_York`, auto-switching `EST`/`EDT`) for readability — e.g. `Jul 08, 2026 11:08:42 PM EDT`. This is a display-only conversion; the JSON file, `output/runs/`/`output/reports/` filenames, and everything internal remain UTC per the spec.
 
-## 7. Known noise (not bugs)
+## 6. Known noise (not bugs)
 
 - yfinance sometimes prints `possibly delisted; no price data found` to stderr during the cache's incremental head/tail fetch (e.g. asking for a single day just outside a ticker's existing cached range). It self-corrects on the next fetch — the run still completes and produces correct data.
 - Tickers with fewer than 200 cached bars are logged as `insufficient_bars` and skipped — this is intentional (non-negotiable #5: never let a `Signal` carry NaN indicators from too little history).
 - Schwab's movers-down screen can legitimately return **0** candidates on non-trading days — it's real-time, so a Sunday query for "today's losers" has nothing to report (confirmed live on a real Sunday). yfinance's `day_losers` screen, by contrast, appears to silently keep serving the last real trading day's results instead of also going empty. This is why the merged losers universe's composition varies day to day — sometimes a real Schwab+yfinance mix, sometimes effectively all-yfinance — without that variation being a bug; it's just the two sources disagreeing about what "today" means when the market's closed.
 
-## 8. GitHub Actions — daily publish to GitHub Pages
+## 7. GitHub Actions — daily publish to GitHub Pages
 
 `.github/workflows/screener.yml` (repo root, not `backend/`) runs the screener on a schedule and publishes the PDF report to GitHub Pages so it's viewable without cloning the repo.
 
@@ -178,7 +165,7 @@ Note: the PDF's displayed "Run timestamp" is shown in US Eastern time (`America/
 - **Concurrency:** the job runs under `concurrency: { group: screener-pages, cancel-in-progress: false }`, so overlapping runs (e.g. a manual trigger while the daily cron is still running) queue instead of cancelling each other.
 - **No Schwab credentials in CI:** the workflow does not set `SCHWAB_APP_KEY`, `SCHWAB_APP_SECRET`, or any other `SCHWAB_*` env var/secret. That means every run of this workflow — scheduled or manual — has `data_provider` defaulting to `"schwab"` but no way to actually reach Schwab, so it falls back to yfinance for everything (bars, universe, fundamentals) on every single call. Local/manual runs on a machine with `.env` configured can use real Schwab data; the published GitHub Pages report currently cannot.
 
-## 9. Tests
+## 8. Tests
 
 ```bash
 uv run pytest                      # everything, including live-network integration tests

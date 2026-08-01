@@ -12,19 +12,25 @@ export default function DashboardLayout({
         <div className="mx-auto flex max-w-6xl items-center justify-between">
           <nav className="flex items-center gap-6 text-sm font-medium">
             <Link href="/" className="font-display text-base font-semibold text-foreground">
+              Ledger
+            </Link>
+            <Link
+              href="/"
+              className="text-foreground-muted transition-colors hover:text-foreground"
+            >
+              Portfolio
+            </Link>
+            <Link
+              href="/watchlist"
+              className="text-foreground-muted transition-colors hover:text-foreground"
+            >
+              Watchlist
+            </Link>
+            <Link
+              href="/screener"
+              className="text-foreground-muted transition-colors hover:text-foreground"
+            >
               Screener
-            </Link>
-            <Link
-              href="/runs"
-              className="text-foreground-muted transition-colors hover:text-foreground"
-            >
-              Runs
-            </Link>
-            <Link
-              href="/backtests"
-              className="text-foreground-muted transition-colors hover:text-foreground"
-            >
-              Backtests
             </Link>
           </nav>
           <SignOutButton />

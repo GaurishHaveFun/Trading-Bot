@@ -8,8 +8,7 @@ The `screener/rules/` subpackage implements a safe, config-driven rule evaluatio
 |------|------|
 | `engine.py` | `RuleEngine` class — evaluates rules, computes score |
 | `functions.py` | Builds the asteval symbol table (indicator closures + scalars) |
-| `quality_gate.py` | `evaluate_quality_gate()` — hard pass/fail fundamentals quality gate |
-| `__init__.py` | Public re-exports: `RuleEngine`, `build_symbol_table`, `evaluate_quality_gate` |
+| `__init__.py` | Public re-exports: `RuleEngine`, `build_symbol_table` |
 
 ---
 
@@ -156,37 +155,3 @@ rules:
 4. No code changes required — `RuleEngine` reads the list from the loaded `RulesConfig` at instantiation.
 5. Add a unit test in `tests/test_rules.py` exercising the new condition against synthetic bars.
 
----
-
-## Quality Gate — `quality_gate.py`
-
-`screener.rules.quality_gate.evaluate_quality_gate(snapshot, config) -> QualityGateResult` is a separate, hard pass/fail filter over balance-sheet-quality fundamentals (see `FundamentalsSnapshot`/`FundamentalsProvider` in `docs/data.md`). It runs **before** a ticker reaches `RuleEngine.evaluate()` — a ticker that fails the gate is dropped and never produces a `Signal` or `RuleResult`. See `docs/overview.md` for where this sits in the pipeline.
-
-### The 6 Checks
-
-Each of the 6 `FundamentalsSnapshot` metrics is checked against a fixed threshold from `QualityScreenConfig` (`config/quality_screen.yaml` — see `docs/config.md`):
-
-| Metric | Fails if |
-|---|---|
-| `fcf_5y_cumulative` | `< min_fcf_5y_cumulative` |
-| `interest_coverage` | `< min_interest_coverage` |
-| `gross_margin` | `< min_gross_margin` |
-| `ocf_ni_ratio` | `< min_ocf_ni_ratio` |
-| `net_margin` | `< min_net_margin` |
-| `share_dilution_5y` | `> max_share_dilution_5y` |
-
-`passed` on the returned `QualityGateResult` is `True` only if zero checks failed. `failed_metrics` lists the metric names that failed; `detail` carries the metric value and its threshold for every metric that was actually checked (see below), for logging/debugging.
-
-### A `None` Metric Always Passes Its Check
-
-If a metric on the `FundamentalsSnapshot` is `None`, its check is skipped entirely — it is neither added to `detail` nor able to appear in `failed_metrics`. A ticker cannot be excluded on data the provider couldn't compute.
-
-This mirrors the `<200 bars` skip-don't-fail convention already used for bar data elsewhere in this codebase: missing data is not treated as evidence of a bad ticker, just as evidence the check can't be run. This matters in particular for `interest_coverage` (where `None` means "no debt", per `docs/data.md`) and `share_dilution_5y` (where `None` means "no computable history") — both are deliberately non-punitive.
-
-### Fixed Thresholds, No Exemptions — a Deliberate Simplification
-
-`evaluate_quality_gate` applies the 6 thresholds uniformly, with no per-sector, per-industry, or per-ticker carve-outs. The source repo that inspired this feature has fuller leniency/exemption logic (e.g. relaxing `interest_coverage` for capital-intensive sectors); that logic was intentionally left out of this first version to keep the gate simple. If raw fixed thresholds turn out to produce too many false-positive exclusions in practice, exemption logic can be layered on top of `evaluate_quality_gate` later.
-
-### Logging
-
-If `passed` is `False`, a `quality_gate_failed` warning is logged with `symbol`, `failed_metrics`, and `detail`. Gate results are not written to output — exclusions surface only via structlog (see `main.py`'s `quality_gate_excluded` counter in the `screener_complete` log line).

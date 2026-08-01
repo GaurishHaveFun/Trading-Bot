@@ -91,56 +91,56 @@ export interface TickerHistory {
   bars: BarRow[];
 }
 
-export interface BacktestRow {
+// ---------------------------------------------------------------------------
+// Paper trading (single-user virtual account). Schema owned by the frontend
+// itself (see lib/paper-schema.ts), unlike the tables above which mirror the
+// Python backend's screener schema.
+// ---------------------------------------------------------------------------
+
+export interface PaperAccountRow {
   id: number;
+  cash_balance: number;
+  starting_balance: number;
   created_at: string;
-  universe: string | null;
-  holding_days: number | null;
-  alert_threshold: number | null;
-  lookback_days: number | null;
-  start_date: string | null;
-  end_date: string | null;
-  total_signals: number | null;
-  wins: number | null;
-  losses: number | null;
-  win_rate: number | null;
-  avg_return_pct: number | null;
-  total_return_pct: number | null;
-  best_trade_return_pct: number | null;
-  worst_trade_return_pct: number | null;
-  baseline_avg_return_pct: number | null;
+  updated_at: string;
 }
 
-export interface BacktestTradeRow {
-  id: number;
-  backtest_id: number;
+export interface PaperPositionRow {
   ticker: string;
-  signal_date: string;
-  score: number | null;
-  rules_passed: number | null;
-  rules_total: number | null;
-  buy_close: number | null;
-  sell_date: string | null;
-  sell_close: number | null;
-  return_pct: number | null;
-  win: boolean | null;
+  quantity: number;
+  avg_cost: number;
+  updated_at: string;
 }
 
-export interface RuleAttributionRow {
+export interface PaperTradeRow {
   id: number;
-  backtest_id: number;
-  rule_name: string;
-  weight: number | null;
-  passed_count: number | null;
-  passed_win_rate: number | null;
-  passed_avg_return_pct: number | null;
-  failed_count: number | null;
-  failed_win_rate: number | null;
-  failed_avg_return_pct: number | null;
-  edge_pct: number | null;
+  ticker: string;
+  side: "buy" | "sell";
+  quantity: number;
+  price: number;
+  realized_pnl: number | null;
+  executed_at: string;
 }
 
-export interface BacktestDetail extends BacktestRow {
-  trades: BacktestTradeRow[];
-  rule_attributions: RuleAttributionRow[];
+// ---------------------------------------------------------------------------
+// Screener FastAPI client types (backend/src/screener/api/app.py). These come
+// back as real JSON numbers from FastAPI, not Postgres numeric-as-string, so
+// no num()/numOrNull() coercion is needed for these shapes.
+// ---------------------------------------------------------------------------
+
+/** GET /quotes response row. */
+export interface QuoteRow {
+  ticker: string;
+  price: number;
+  change_pct: number;
+  previous_close: number;
+  currency: string;
+}
+
+/** GET /losers response row. */
+export interface LoserRow {
+  ticker: string;
+  price: number;
+  change_pct: number;
+  market_cap: number;
 }

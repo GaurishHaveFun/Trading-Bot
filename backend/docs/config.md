@@ -112,37 +112,6 @@ Error behavior: no bespoke validation is performed, so failures surface as whate
 
 ---
 
-## Quality Screen Config Model
-
-Represents the parsed `config/quality_screen.yaml` file — the 6 fixed thresholds used by `evaluate_quality_gate()` (see `docs/rules.md`).
-
-### QualityScreenConfig
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `min_fcf_5y_cumulative` | `float` | `0.0` | Minimum cumulative 5-year free cash flow |
-| `min_interest_coverage` | `float` | `2.0` | Minimum latest-year EBIT / interest expense |
-| `min_gross_margin` | `float` | `0.15` | Minimum average gross margin |
-| `min_ocf_ni_ratio` | `float` | `0.7` | Minimum average operating-cash-flow / net-income ratio |
-| `min_net_margin` | `float` | `0.05` | Minimum average net margin |
-| `max_share_dilution_5y` | `float` | `0.20` | Maximum share-count growth over the available history |
-
----
-
-## load_quality_screen_config(path)
-
-```python
-from pathlib import Path
-from screener.config import load_quality_screen_config
-
-cfg = load_quality_screen_config(Path("config/quality_screen.yaml"))
-print(cfg.min_interest_coverage)  # 2.0
-```
-
-Reads the YAML file at `path`, passes the parsed dict to `QualityScreenConfig.model_validate()`, and returns the validated model. Same error semantics as `load_rules_config`.
-
----
-
 ## File locations
 
 | File | Purpose |
@@ -150,6 +119,5 @@ Reads the YAML file at `path`, passes the parsed dict to `QualityScreenConfig.mo
 | `backend/.env` | Runtime secrets and overrides (gitignored) |
 | `backend/.env.example` | Template showing all supported env vars |
 | `backend/config/rules.yaml` | Cron schedule + 5 weighted rules |
-| `backend/config/quality_screen.yaml` | 6 fixed thresholds for the fundamentals quality gate |
 | `backend/config/universe.yaml` | Fixed 10-symbol list used by the `"static"` universe |
 | `backend/config/watchlist.yaml` | 16-symbol curated big-tech/chip list, parsed by `load_watchlist()` |

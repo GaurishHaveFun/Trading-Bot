@@ -43,8 +43,7 @@ MSFT response: `grossMarginTTM=68.3092`, `netProfitMarginTTM=39.3423` —
 consistent with MSFT's real ~68%/~39% margins, corroborating the same
 convention on a second symbol. Both are therefore divided by 100 below
 before being stored, to match the 0-1 ratio convention the yfinance provider
-and `config/quality_screen.yaml` thresholds (e.g. `min_gross_margin: 0.15`)
-already use.
+already uses (e.g. gross margin as `0.15` rather than `15`).
 
 CAVEAT — `interestCoverage` is NOT rescaled (it's a coverage ratio, e.g.
 "5.2x", not a percentage — no /100 conversion applies) but is NOT fully

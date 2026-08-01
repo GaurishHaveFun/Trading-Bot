@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from screener.backtest import run_backtest
-from screener.config import get_settings, load_quality_screen_config, load_rules_config, load_watchlist
+from screener.config import get_settings, load_rules_config, load_watchlist
 from screener.data import BarCache, FundamentalsCache
 from screener.data.factory import (
     build_bar_provider,
@@ -25,13 +25,12 @@ from screener.output import (
     write_run_to_db,
     write_ticker_report,
 )
-from screener.rules import RuleEngine, evaluate_quality_gate
+from screener.rules import RuleEngine
 from screener.utils.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
 
 _RULES_PATH = Path("config/rules.yaml")
-_QUALITY_SCREEN_PATH = Path("config/quality_screen.yaml")
 _CACHE_PATH = Path(".cache/bars.db")
 _FUNDAMENTALS_CACHE_PATH = Path(".cache/fundamentals.db")
 _MIN_BARS = 200
@@ -61,7 +60,6 @@ async def run_screener(*, check_market_hours: bool = False) -> ScreenerRun | Non
             return None
 
     rules_config = load_rules_config(_RULES_PATH)
-    quality_screen_config = load_quality_screen_config(_QUALITY_SCREEN_PATH)
     watchlist = load_watchlist(settings.watchlist_path)
     universe = build_universe_provider(settings, watchlist)
     symbols = await universe.get_symbols()
@@ -93,7 +91,6 @@ async def run_screener(*, check_market_hours: bool = False) -> ScreenerRun | Non
     signals: list[Signal] = []
     signal_bars: dict[str, list[Bar]] = {}
     run_ts = datetime.now(timezone.utc)
-    quality_gate_excluded = 0
 
     for item in results:
         if isinstance(item, Exception):
@@ -102,11 +99,6 @@ async def run_screener(*, check_market_hours: bool = False) -> ScreenerRun | Non
         symbol, bars, funda_snapshot = item
         if len(bars) < _MIN_BARS:
             logger.warning("insufficient_bars", symbol=symbol, count=len(bars))
-            continue
-
-        gate_result = evaluate_quality_gate(funda_snapshot, quality_screen_config)
-        if not gate_result.passed:
-            quality_gate_excluded += 1
             continue
 
         meta = quotes.get(symbol)
@@ -156,7 +148,6 @@ async def run_screener(*, check_market_hours: bool = False) -> ScreenerRun | Non
         total_symbols=len(symbols),
         signals_evaluated=len(signals),
         above_threshold=len(above),
-        quality_gate_excluded=quality_gate_excluded,
         top5=[f"{s.ticker}={s.score:.2f}" for s in top5],
         output=str(path),
         report=str(report_path),
@@ -238,7 +229,6 @@ async def run_ticker_debug(symbol: str) -> None:
     configure_logging(settings.log_level)
 
     rules_config = load_rules_config(_RULES_PATH)
-    quality_screen_config = load_quality_screen_config(_QUALITY_SCREEN_PATH)
     watchlist = load_watchlist(settings.watchlist_path)
     cache = BarCache(_CACHE_PATH)
     provider = build_bar_provider(settings, cache)
@@ -255,17 +245,6 @@ async def run_ticker_debug(symbol: str) -> None:
     )
     if len(bars) < _MIN_BARS:
         print(f"[WARN] Only {len(bars)} bars for {symbol} — need at least {_MIN_BARS}")
-        cache.close()
-        fundamentals_cache.close()
-        return
-
-    gate_result = evaluate_quality_gate(funda_snapshot, quality_screen_config)
-    if not gate_result.passed:
-        print(
-            f"[WARN] {symbol} excluded by quality gate — failed metrics: "
-            f"{gate_result.failed_metrics}"
-        )
-        print(f"  Detail: {gate_result.detail}")
         cache.close()
         fundamentals_cache.close()
         return

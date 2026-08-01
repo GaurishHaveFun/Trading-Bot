@@ -100,19 +100,6 @@ class FundamentalsSnapshot(BaseModel):
         return v.astimezone(timezone.utc)
 
 
-class QualityGateResult(BaseModel):
-    """Internal filtering type produced by the fundamentals quality gate.
-
-    NOT part of the locked ScreenerRun/Signal JSON output schema documented
-    in CLAUDE.md — must never be added to Signal or ScreenerRun. Exclusions
-    surface only via structlog, never via the output schema."""
-
-    ticker: str
-    passed: bool
-    failed_metrics: list[str] = []
-    detail: dict[str, Any] = {}
-
-
 class BacktestTrade(BaseModel):
     """A single simulated trade from the historical backtest: buy at the
     signal day's close, sell `holding_days` trading days later."""

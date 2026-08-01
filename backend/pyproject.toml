@@ -6,6 +6,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "apscheduler>=3.10",
     "asteval>=1.0.9",
+    "fastapi>=0.115.0",
     "httpx>=0.28.1",
     "numpy>=2.2.6",
     "pandas>=3.0.3",
@@ -17,6 +18,7 @@ dependencies = [
     "reportlab>=4.2",
     "schwab-py>=1.5.1",
     "structlog>=26.1.0",
+    "uvicorn[standard]>=0.34.0",
     "yfinance>=1.4.1",
 ]
 

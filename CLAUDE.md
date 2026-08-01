@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Phase 1 of a multi-phase trading bot. A Python batch/scheduled service that: pulls daily OHLCV bars for a universe of stocks → computes technical indicators → filters out tickers that fail a fundamentals-based quality gate → evaluates weighted rules via a safe expression engine → emits a locked JSON output file plus a human-readable PDF report. Runs via `--once` (single run), `--ticker AAPL` (debug single ticker), `--backtest` (historical backtest of the current rules), or bare (cron scheduler).
+Phase 1 of a multi-phase trading bot. A Python batch/scheduled service that: pulls daily OHLCV bars for a universe of stocks → computes technical indicators → evaluates weighted rules via a safe expression engine → emits a locked JSON output file plus a human-readable PDF report. Runs via `--once` (single run), `--ticker AAPL` (debug single ticker), `--backtest` (historical backtest of the current rules), or bare (cron scheduler).
 
 ## Layout
 
@@ -19,8 +19,7 @@ trading-bot/
     ├── config/
     │   ├── rules.yaml            # cron schedule + 5 weighted rules
     │   ├── universe.yaml         # 10 ticker symbols (static fallback universe)
-    │   ├── watchlist.yaml        # 16 ticker big-tech/chip watchlist
-    │   └── quality_screen.yaml   # fundamentals quality-gate thresholds
+    │   └── watchlist.yaml        # 16 ticker big-tech/chip watchlist
     ├── docs/                 # one .md per module (written by Sonnet subagents after each module is built)
     ├── src/screener/
     │   ├── main.py           # orchestration + CLI only
@@ -30,7 +29,7 @@ trading-bot/
     │   ├── universe/         # UniverseProvider base + StaticUniverse + LosersUniverse + SP500Universe
     │   ├── data/             # DataProvider base + BarCache/FundamentalsCache (SQLite) + YFinanceProvider + FundamentalsProvider
     │   ├── indicators/       # library.py: sma, ema, rsi, atr, sma_volume, low_52w, high_52w, macd_line, macd_signal_line, macd_histogram
-    │   ├── rules/            # engine.py + functions.py + quality_gate.py (asteval-powered)
+    │   ├── rules/            # engine.py + functions.py (asteval-powered)
     │   ├── output/           # json_writer.py + pdf_writer.py
     │   ├── backtest/         # engine.py: historical backtest of current rules over the watchlist
     │   └── utils/            # logging.py (structlog JSON)
@@ -121,6 +120,7 @@ uv run python -m screener.main --backtest    # historical backtest (--days, defa
 uv run python -m screener.main               # start cron scheduler
 uv run pytest                                # run all unit tests
 uv run pytest -m "not integration"           # skip network tests
+uv run uvicorn screener.api.app:app --reload --port 8000  # start the read-only HTTP API (GET /health, /quotes, /losers)
 ```
 
 ## Definition of Done (Phase 1)
@@ -128,5 +128,4 @@ uv run pytest -m "not integration"           # skip network tests
 - `uv run pytest` passes (all non-integration tests).
 - `uv run python -m screener.main --once` produces valid JSON in `output/runs/` and a PDF report in `output/reports/` in under 60 seconds.
 - `--ticker AAPL` prints a readable per-rule breakdown to the console and writes a per-ticker PDF report.
-- Tickers that fail the fundamentals-based quality gate are excluded from scoring before rules run.
 - No NaN values in any Signal, all timestamps UTC, JSON logs only.

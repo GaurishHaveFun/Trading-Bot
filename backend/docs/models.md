@@ -108,21 +108,6 @@ Any metric that could not be computed (missing row, insufficient history, etc.) 
 
 ---
 
-### QualityGateResult
-
-The outcome of running `evaluate_quality_gate()` (see `docs/rules.md`) against a `FundamentalsSnapshot`.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `ticker` | `str` | required | Ticker symbol |
-| `passed` | `bool` | required | `True` only if zero checks failed |
-| `failed_metrics` | `list[str]` | `[]` | Names of metrics that failed their threshold check |
-| `detail` | `dict[str, Any]` | `{}` | Metric values and thresholds for every metric that was checked |
-
-**Not part of the locked output schema:** `QualityGateResult` is an internal-only type. It is never added to `Signal` or `ScreenerRun` and never serialized to the JSON output file — a ticker that fails the gate is simply dropped in `main.py` before a `Signal` is ever created for it, so the locked `ScreenerRun` JSON schema (documented in `CLAUDE.md`) is unchanged by this feature. Exclusions are only visible via structlog warnings.
-
----
-
 ### BacktestTrade
 
 A single simulated trade from the historical backtest: buy at the signal day's close, sell `holding_days` trading days later.

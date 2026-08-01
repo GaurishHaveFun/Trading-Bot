@@ -73,7 +73,7 @@ export default function SignalTable({
                 >
                   <td className="px-4 py-3 font-medium">
                     <Link
-                      href={`/tickers/${s.ticker}`}
+                      href={`/screener/tickers/${s.ticker}`}
                       className="font-mono text-foreground hover:text-gradient-accent hover:underline"
                       onClick={(e) => e.stopPropagation()}
                     >

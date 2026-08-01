@@ -61,7 +61,7 @@ config/universe.yaml   config/watchlist.yaml     config/rules.yaml
   output/runs/run_<UTC>.json      output/reports/report_<UTC>.pdf
 ```
 
-In parallel with bar fetching, `FundamentalsProvider.get_fundamentals()` also fetches a `FundamentalsSnapshot` per symbol (cached daily in `.cache/fundamentals.db` — see `docs/data.md`). Each snapshot is passed through `evaluate_quality_gate()` (`docs/rules.md`) immediately after the `>= 200 bars` check; a ticker that fails the gate is dropped there and never reaches `RuleEngine.evaluate()` or produces a `Signal`.
+In parallel with bar fetching, `FundamentalsProvider.get_fundamentals()` also fetches a `FundamentalsSnapshot` per symbol (cached daily in `.cache/fundamentals.db` — see `docs/data.md`), which feeds fundamentals-derived rule inputs (e.g. `price_to_book`) into `RuleEngine.evaluate()`.
 
 `LosersUniverse` (`docs/universe.md`) is the default universe provider — it screens yfinance's `day_losers` query down to large-cap (>= $10B market cap) equities, ranks by % loss, and unions the top 15 with any `config/watchlist.yaml` symbols that are also down today. `StaticUniverse` (backed by `config/universe.yaml`) is the fallback when `UNIVERSE=static` is set.
 
@@ -150,16 +150,3 @@ Current rules:
 | undervalued_pb | 1.5 | `price_to_book < 4` |
 
 The score for a ticker is the sum of weights of passing rules divided by the sum of all weights. A ticker scoring at or above `alert_threshold` (default `0.70`, configurable via `.env`) is considered an alert-level signal.
-
-### `config/quality_screen.yaml`
-
-Defines the 6 fixed thresholds used by the fundamentals quality gate (`evaluate_quality_gate()`, see `docs/rules.md`) to hard-exclude tickers with weak balance-sheet fundamentals before rule evaluation. Unlike `rules.yaml`'s weighted scoring, this is a pass/fail filter — a ticker failing any one check (on a metric it has data for) is dropped entirely.
-
-| Metric | Threshold | Fails if |
-|---|---|---|
-| fcf_5y_cumulative | `min_fcf_5y_cumulative` = 0.0 | `< 0.0` |
-| interest_coverage | `min_interest_coverage` = 2.0 | `< 2.0` |
-| gross_margin | `min_gross_margin` = 0.15 | `< 0.15` |
-| ocf_ni_ratio | `min_ocf_ni_ratio` = 0.7 | `< 0.7` |
-| net_margin | `min_net_margin` = 0.05 | `< 0.05` |
-| share_dilution_5y | `max_share_dilution_5y` = 0.20 | `> 0.20` |

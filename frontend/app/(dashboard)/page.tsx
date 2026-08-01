@@ -1,126 +1,93 @@
-import Link from "next/link";
-import SignalTable from "@/components/SignalTable";
-import ScoreGauge from "@/components/ScoreGauge";
-import { getLatestRun } from "@/lib/queries";
-import type { RunWithSignals } from "@/lib/types";
+import PortfolioSummary from "@/components/PortfolioSummary";
+import PositionsTable from "@/components/PositionsTable";
+import TradesList from "@/components/TradesList";
+import TradeTicket from "@/components/TradeTicket";
+import { getAccount, getPositions, getTrades } from "@/lib/paper";
+import { getQuotes } from "@/lib/quotes";
+import type { PaperAccountRow, PaperPositionRow, PaperTradeRow, QuoteRow } from "@/lib/types";
 
-// There's no useful static shell here (data changes on every screener run,
-// and there may be no DB configured at build time) — always render at
-// request time.
+// Account/position/quote data changes on every trade and every price tick —
+// always render at request time, same rationale as the old screener home.
 export const dynamic = "force-dynamic";
 
-async function loadLatestRun(): Promise<{
-  run: RunWithSignals | null;
-  error: string | null;
-}> {
+interface PortfolioData {
+  account: PaperAccountRow;
+  positions: PaperPositionRow[];
+  trades: PaperTradeRow[];
+  quotes: QuoteRow[];
+}
+
+async function loadPortfolio(): Promise<{ data: PortfolioData | null; error: string | null }> {
   try {
-    const run = await getLatestRun();
-    return { run, error: null };
+    const [account, positions, trades] = await Promise.all([
+      getAccount(),
+      getPositions(),
+      getTrades(10),
+    ]);
+    // getQuotes never throws (see lib/quotes.ts) — a screener-API outage
+    // yields [], which PositionsTable already renders as "—" per row.
+    const quotes = await getQuotes(positions.map((p) => p.ticker));
+    return { data: { account, positions, trades, quotes }, error: null };
   } catch (err) {
-    console.error("Failed to load latest run", err);
+    console.error("Failed to load portfolio", err);
     return {
-      run: null,
-      error:
-        "Could not load the latest run. Check that DATABASE_URL is configured and reachable.",
+      data: null,
+      error: "Could not load your portfolio. Check that DATABASE_URL is configured and reachable.",
     };
   }
 }
 
-function StatTile({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="glass-panel p-3">
-      <dt className="text-xs uppercase tracking-wide text-foreground-muted">{label}</dt>
-      <dd className="mt-1 font-mono font-medium text-foreground">{value}</dd>
-    </div>
-  );
-}
+export default async function PortfolioPage() {
+  const { data, error } = await loadPortfolio();
 
-export default async function LatestRunPage() {
-  const { run, error } = await loadLatestRun();
+  if (error || !data) {
+    return (
+      <div className="glass-panel px-4 py-3 text-sm" style={{ color: "var(--loss)" }}>
+        {error}
+      </div>
+    );
+  }
 
-  const threshold = run?.alert_threshold ?? 0.7;
-  const top = run?.signals?.[0] ?? null;
+  const { account, positions, trades, quotes } = data;
+  const quoteByTicker = new Map(quotes.map((q) => [q.ticker, q]));
+
+  let marketValue = 0;
+  let costBasis = 0;
+  for (const p of positions) {
+    const quote = quoteByTicker.get(p.ticker);
+    // Fall back to cost basis when a live quote is missing, so a single
+    // unreachable symbol degrades the hero total gracefully instead of
+    // producing NaN — the per-row table still shows "—" for that ticker.
+    marketValue += (quote?.price ?? p.avg_cost) * p.quantity;
+    costBasis += p.avg_cost * p.quantity;
+  }
+  const totalValue = account.cash_balance + marketValue;
+  const unrealizedPnl = marketValue - costBasis;
+  const unrealizedPnlPct = costBasis > 0 ? (unrealizedPnl / costBasis) * 100 : 0;
 
   return (
     <div className="flex flex-col gap-6">
-      {error && (
-        <div
-          className="glass-panel px-4 py-3 text-sm"
-          style={{ color: "var(--loss)" }}
-        >
-          {error}
-        </div>
-      )}
+      <PortfolioSummary
+        totalValue={totalValue}
+        cashBalance={account.cash_balance}
+        unrealizedPnl={unrealizedPnl}
+        unrealizedPnlPct={unrealizedPnlPct}
+      />
 
-      {!error && !run && (
-        <div className="glass-panel px-4 py-6 text-center text-sm text-foreground-muted">
-          No runs recorded yet.
-        </div>
-      )}
+      <section className="glass-panel panel-enter p-4 sm:p-6">
+        <h2 className="mb-3 font-display text-lg font-semibold text-foreground">Buy</h2>
+        <TradeTicket side="buy" />
+      </section>
 
-      {run && (
-        <>
-          {top ? (
-            <section className="glass-panel-dense panel-enter p-6 sm:p-8">
-              <p className="font-mono text-xs uppercase tracking-widest text-gradient-accent">
-                What fired today
-              </p>
-              <div className="mt-2 flex flex-wrap items-baseline gap-4">
-                <Link
-                  href={`/tickers/${top.ticker}`}
-                  className="font-display text-4xl font-bold text-foreground transition-colors hover:text-gradient-accent sm:text-5xl"
-                >
-                  {top.ticker}
-                </Link>
-                <span className="font-mono text-sm text-foreground-muted">
-                  {top.rules_passed ?? "—"}/{top.rules_total ?? "—"} rules passed
-                </span>
-              </div>
-              <div className="mt-5 max-w-md">
-                <ScoreGauge score={top.score} threshold={threshold} size="lg" />
-              </div>
-              <dl className="mt-6 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-                <StatTile
-                  label="Close"
-                  value={top.snapshot?.close !== undefined ? top.snapshot.close.toFixed(2) : "—"}
-                />
-                <StatTile
-                  label="Change %"
-                  value={
-                    top.snapshot?.change_pct !== undefined
-                      ? `${top.snapshot.change_pct.toFixed(2)}%`
-                      : "—"
-                  }
-                />
-                <StatTile
-                  label="RSI 14"
-                  value={top.snapshot?.rsi_14 !== undefined ? top.snapshot.rsi_14.toFixed(1) : "—"}
-                />
-                <StatTile
-                  label="Industry"
-                  value={top.snapshot?.industry ?? "—"}
-                />
-              </dl>
-            </section>
-          ) : (
-            <div>
-              <h1 className="font-display text-2xl font-semibold text-foreground">
-                Latest run
-              </h1>
-              <p className="text-sm text-foreground-muted">No signals in this run.</p>
-            </div>
-          )}
+      <section className="flex flex-col gap-2">
+        <h2 className="font-display text-lg font-semibold text-foreground">Holdings</h2>
+        <PositionsTable positions={positions} quotes={quoteByTicker} />
+      </section>
 
-          <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-            <StatTile label="Run timestamp" value={run.run_timestamp} />
-            <StatTile label="Universe" value={run.universe ?? "—"} />
-            <StatTile label="Alert threshold" value={String(run.alert_threshold ?? "—")} />
-            <StatTile label="Signals" value={String(run.signals.length)} />
-          </dl>
-
-          <SignalTable signals={run.signals} alertThreshold={run.alert_threshold} />
-        </>
-      )}
+      <section className="flex flex-col gap-2">
+        <h2 className="font-display text-lg font-semibold text-foreground">Recent trades</h2>
+        <TradesList trades={trades} />
+      </section>
     </div>
   );
 }

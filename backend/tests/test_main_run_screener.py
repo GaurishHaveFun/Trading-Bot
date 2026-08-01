@@ -55,9 +55,6 @@ def _enter_pipeline_mocks(stack: ExitStack, tmp_path) -> dict:
         "get_settings": patch("screener.main.get_settings", return_value=settings),
         "configure_logging": patch("screener.main.configure_logging"),
         "load_rules_config": patch("screener.main.load_rules_config", return_value=_rules_config()),
-        "load_quality_screen_config": patch(
-            "screener.main.load_quality_screen_config", return_value=MagicMock()
-        ),
         "load_watchlist": patch("screener.main.load_watchlist", return_value=set()),
         "build_universe_provider": patch(
             "screener.main.build_universe_provider", return_value=_mock_universe()

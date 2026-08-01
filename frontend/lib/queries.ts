@@ -1,10 +1,6 @@
 import { sql } from "./db";
 import type {
-  BacktestDetail,
-  BacktestRow,
-  BacktestTradeRow,
   BarRow,
-  RuleAttributionRow,
   RuleResultRow,
   RunListItem,
   RunRow,
@@ -25,13 +21,17 @@ import type {
  * `Number(...)` when we build the typed rows below.
  */
 
-function num(value: unknown): number {
+// Exported (not just used locally) so other modules touching this same
+// Neon schema — e.g. lib/paper-schema.ts — can reuse the exact same
+// driver-value coercion instead of forking a second copy that could drift.
+
+export function num(value: unknown): number {
   if (value === null || value === undefined) return 0;
   const n = Number(value);
   return Number.isNaN(n) ? 0 : n;
 }
 
-function numOrNull(value: unknown): number | null {
+export function numOrNull(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   const n = Number(value);
   return Number.isNaN(n) ? null : n;
@@ -106,61 +106,6 @@ function mapBar(row: Record<string, unknown>): BarRow {
     low: num(row.low),
     close: num(row.close),
     volume: num(row.volume),
-  };
-}
-
-function mapBacktest(row: Record<string, unknown>): BacktestRow {
-  return {
-    id: num(row.id),
-    created_at: toIso(row.created_at),
-    universe: (row.universe as string) ?? null,
-    holding_days: numOrNull(row.holding_days),
-    alert_threshold: numOrNull(row.alert_threshold),
-    lookback_days: numOrNull(row.lookback_days),
-    start_date: toIsoOrNull(row.start_date),
-    end_date: toIsoOrNull(row.end_date),
-    total_signals: numOrNull(row.total_signals),
-    wins: numOrNull(row.wins),
-    losses: numOrNull(row.losses),
-    win_rate: numOrNull(row.win_rate),
-    avg_return_pct: numOrNull(row.avg_return_pct),
-    total_return_pct: numOrNull(row.total_return_pct),
-    best_trade_return_pct: numOrNull(row.best_trade_return_pct),
-    worst_trade_return_pct: numOrNull(row.worst_trade_return_pct),
-    baseline_avg_return_pct: numOrNull(row.baseline_avg_return_pct),
-  };
-}
-
-function mapBacktestTrade(row: Record<string, unknown>): BacktestTradeRow {
-  return {
-    id: num(row.id),
-    backtest_id: num(row.backtest_id),
-    ticker: String(row.ticker),
-    signal_date: toIso(row.signal_date),
-    score: numOrNull(row.score),
-    rules_passed: numOrNull(row.rules_passed),
-    rules_total: numOrNull(row.rules_total),
-    buy_close: numOrNull(row.buy_close),
-    sell_date: toIsoOrNull(row.sell_date),
-    sell_close: numOrNull(row.sell_close),
-    return_pct: numOrNull(row.return_pct),
-    win: row.win === null || row.win === undefined ? null : Boolean(row.win),
-  };
-}
-
-function mapRuleAttribution(row: Record<string, unknown>): RuleAttributionRow {
-  return {
-    id: num(row.id),
-    backtest_id: num(row.backtest_id),
-    rule_name: String(row.rule_name),
-    weight: numOrNull(row.weight),
-    passed_count: numOrNull(row.passed_count),
-    passed_win_rate: numOrNull(row.passed_win_rate),
-    passed_avg_return_pct: numOrNull(row.passed_avg_return_pct),
-    failed_count: numOrNull(row.failed_count),
-    failed_win_rate: numOrNull(row.failed_win_rate),
-    failed_avg_return_pct: numOrNull(row.failed_avg_return_pct),
-    edge_pct: numOrNull(row.edge_pct),
   };
 }
 
@@ -310,56 +255,4 @@ export async function getTickerHistory(ticker: string): Promise<TickerHistory> {
   const bars = barRows.map((r) => mapBar(r as Record<string, unknown>));
 
   return { ticker, signals, bars };
-}
-
-/** Past backtests, most recent first. */
-export async function listBacktests(limit = 50): Promise<BacktestRow[]> {
-  const rows = await sql`
-    SELECT
-      id, created_at, universe, holding_days, alert_threshold, lookback_days,
-      start_date, end_date, total_signals, wins, losses, win_rate, avg_return_pct,
-      total_return_pct, best_trade_return_pct, worst_trade_return_pct, baseline_avg_return_pct
-    FROM backtests
-    ORDER BY created_at DESC
-    LIMIT ${limit}
-  `;
-  return rows.map((r) => mapBacktest(r as Record<string, unknown>));
-}
-
-/** One backtest plus its trades and rule attributions. */
-export async function getBacktest(id: number): Promise<BacktestDetail | null> {
-  const rows = await sql`
-    SELECT
-      id, created_at, universe, holding_days, alert_threshold, lookback_days,
-      start_date, end_date, total_signals, wins, losses, win_rate, avg_return_pct,
-      total_return_pct, best_trade_return_pct, worst_trade_return_pct, baseline_avg_return_pct
-    FROM backtests
-    WHERE id = ${id}
-    LIMIT 1
-  `;
-  if (rows.length === 0) return null;
-  const backtest = mapBacktest(rows[0] as Record<string, unknown>);
-
-  const [tradeRows, attributionRows] = await Promise.all([
-    sql`
-      SELECT id, backtest_id, ticker, signal_date, score, rules_passed, rules_total,
-             buy_close, sell_date, sell_close, return_pct, win
-      FROM backtest_trades
-      WHERE backtest_id = ${id}
-      ORDER BY signal_date ASC
-    `,
-    sql`
-      SELECT id, backtest_id, rule_name, weight, passed_count, passed_win_rate,
-             passed_avg_return_pct, failed_count, failed_win_rate, failed_avg_return_pct, edge_pct
-      FROM rule_attributions
-      WHERE backtest_id = ${id}
-      ORDER BY edge_pct DESC NULLS LAST
-    `,
-  ]);
-
-  return {
-    ...backtest,
-    trades: tradeRows.map((r) => mapBacktestTrade(r as Record<string, unknown>)),
-    rule_attributions: attributionRows.map((r) => mapRuleAttribution(r as Record<string, unknown>)),
-  };
 }

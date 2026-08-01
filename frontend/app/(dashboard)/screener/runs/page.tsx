@@ -64,7 +64,7 @@ export default async function RunsPage() {
                 <tr key={run.id} className="glass-row">
                   <td className="px-4 py-3">
                     <Link
-                      href={`/runs/${encodeURIComponent(run.run_timestamp)}`}
+                      href={`/screener/runs/${encodeURIComponent(run.run_timestamp)}`}
                       className="font-mono font-medium text-foreground hover:text-gradient-accent hover:underline"
                     >
                       {run.run_timestamp}
