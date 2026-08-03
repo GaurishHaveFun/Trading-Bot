@@ -1,7 +1,8 @@
 import TradeTicket from "./TradeTicket";
 import type { LoserRow } from "@/lib/types";
 
-function formatCurrency(value: number): string {
+function formatCurrency(value: number | null): string {
+  if (value == null) return "—";
   return value.toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
@@ -10,7 +11,8 @@ function formatCurrency(value: number): string {
 }
 
 /** Compact human-readable market cap, e.g. "$1.2B". */
-function formatMarketCap(value: number): string {
+function formatMarketCap(value: number | null): string {
+  if (value == null) return "—";
   if (value >= 1e12) return `$${(value / 1e12).toFixed(2)}T`;
   if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
   if (value >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
@@ -55,10 +57,11 @@ export default function WatchlistTable({ losers }: { losers: LoserRow[] }) {
               </td>
               <td
                 className="px-4 py-3 text-right font-mono tabular-nums"
-                style={{ color: l.change_pct >= 0 ? "var(--gain)" : "var(--loss)" }}
+                style={l.change_pct == null ? undefined : { color: l.change_pct >= 0 ? "var(--gain)" : "var(--loss)" }}
               >
-                {l.change_pct >= 0 ? "+" : ""}
-                {l.change_pct.toFixed(2)}%
+                {l.change_pct == null
+                  ? "—"
+                  : `${l.change_pct >= 0 ? "+" : ""}${l.change_pct.toFixed(2)}%`}
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums text-foreground-muted">
                 {formatMarketCap(l.market_cap)}
