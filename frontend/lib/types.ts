@@ -140,17 +140,17 @@ export interface PaperAccountHistoryRow {
 /** GET /quotes response row. */
 export interface QuoteRow {
   ticker: string;
-  price: number;
-  change_pct: number;
-  previous_close: number;
+  price: number | null;
+  change_pct: number | null;
+  previous_close: number | null;
   currency: string;
 }
 
 /** GET /losers response row. */
 export interface LoserRow {
   ticker: string;
-  price: number;
-  change_pct: number;
-  market_cap: number;
+  price: number | null;
+  change_pct: number | null;
+  market_cap: number | null;
   sector: string | null;
 }
