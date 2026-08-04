@@ -175,6 +175,9 @@ export async function buyStock(
   if (!quote) {
     return { success: false, error: `No quote available for ${normalizedTicker}` };
   }
+  if (quote.price == null) {
+    return { success: false, error: `No live price available for ${normalizedTicker}` };
+  }
   const price = quote.price;
   const cost = quantity * price;
 
@@ -254,6 +257,9 @@ export async function sellStock(
   const quote = quotes.find((q) => q.ticker === normalizedTicker);
   if (!quote) {
     return { success: false, error: `No quote available for ${normalizedTicker}` };
+  }
+  if (quote.price == null) {
+    return { success: false, error: `No live price available for ${normalizedTicker}` };
   }
   const price = quote.price;
   const proceeds = quantity * price;

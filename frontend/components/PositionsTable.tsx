@@ -49,10 +49,10 @@ export default function PositionsTable({
           {positions.map((p) => {
             const quote = quotes.get(p.ticker);
             const price = quote?.price;
-            const marketValue = price !== undefined ? price * p.quantity : null;
-            const unrealizedPnl = price !== undefined ? (price - p.avg_cost) * p.quantity : null;
+            const marketValue = price != null ? price * p.quantity : null;
+            const unrealizedPnl = price != null ? (price - p.avg_cost) * p.quantity : null;
             const unrealizedPnlPct =
-              price !== undefined && p.avg_cost > 0
+              price != null && p.avg_cost > 0
                 ? ((price - p.avg_cost) / p.avg_cost) * 100
                 : null;
             const changePct = quote?.change_pct ?? null;
@@ -72,7 +72,7 @@ export default function PositionsTable({
                   {formatCurrency(p.avg_cost)}
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums">
-                  {price !== undefined ? formatCurrency(price) : "—"}
+                  {price != null ? formatCurrency(price) : "—"}
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums">
                   {marketValue !== null ? formatCurrency(marketValue) : "—"}
