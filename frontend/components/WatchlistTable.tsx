@@ -1,23 +1,7 @@
+import Link from "next/link";
 import TradeTicket from "./TradeTicket";
+import { formatCompact, formatCurrency } from "@/lib/format";
 import type { LoserRow } from "@/lib/types";
-
-function formatCurrency(value: number | null): string {
-  if (value == null) return "—";
-  return value.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  });
-}
-
-/** Compact human-readable market cap, e.g. "$1.2B". */
-function formatMarketCap(value: number | null): string {
-  if (value == null) return "—";
-  if (value >= 1e12) return `$${(value / 1e12).toFixed(2)}T`;
-  if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
-  if (value >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
-  return formatCurrency(value);
-}
 
 /**
  * Today's biggest losers, each with an inline quick-buy TradeTicket. The
@@ -50,7 +34,14 @@ export default function WatchlistTable({ losers }: { losers: LoserRow[] }) {
         <tbody className="divide-y divide-white/10">
           {losers.map((l) => (
             <tr key={l.ticker} className="glass-row">
-              <td className="px-4 py-3 font-mono font-medium text-foreground">{l.ticker}</td>
+              <td className="px-4 py-3 font-medium">
+                <Link
+                  href={`/screener/tickers/${l.ticker}`}
+                  className="font-mono text-foreground hover:text-gradient-accent hover:underline"
+                >
+                  {l.ticker}
+                </Link>
+              </td>
               <td className="px-4 py-3 text-left text-foreground-muted">{l.sector ?? "—"}</td>
               <td className="px-4 py-3 text-right font-mono tabular-nums">
                 {formatCurrency(l.price)}
@@ -64,7 +55,7 @@ export default function WatchlistTable({ losers }: { losers: LoserRow[] }) {
                   : `${l.change_pct >= 0 ? "+" : ""}${l.change_pct.toFixed(2)}%`}
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums text-foreground-muted">
-                {formatMarketCap(l.market_cap)}
+                {formatCompact(l.market_cap)}
               </td>
               <td className="px-4 py-3">
                 <TradeTicket ticker={l.ticker} lockTicker side="buy" compact />

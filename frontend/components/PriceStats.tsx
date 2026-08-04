@@ -1,46 +1,6 @@
+import Tile from "./Tile";
+import { formatNum, formatVolume } from "@/lib/format";
 import type { BarRow, SignalSnapshot } from "@/lib/types";
-
-function formatNum(value: number | null | undefined, digits = 2): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
-  return value.toFixed(digits);
-}
-
-/** Format a large count (volume) with a K/M/B suffix, matching the app's compact-number style. */
-function formatVolume(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
-  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
-  if (abs >= 1_000) return `${(value / 1_000).toFixed(2)}K`;
-  return String(value);
-}
-
-function Tile({
-  label,
-  value,
-  tone,
-  valueClassName,
-}: {
-  label: string;
-  value: React.ReactNode;
-  tone?: "pos" | "neg" | "neutral";
-  valueClassName?: string;
-}) {
-  const color =
-    tone === "pos" ? "var(--gain)" : tone === "neg" ? "var(--loss)" : "var(--foreground)";
-
-  return (
-    <div className="glass-panel-dense p-4">
-      <div className="text-xs uppercase tracking-wide text-foreground-muted">{label}</div>
-      <div
-        className={`mt-1 font-mono text-lg font-semibold ${valueClassName ?? ""}`}
-        style={{ color }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
 
 /** Small "above"/"below" indicator relative to a moving average, gain/loss colored. */
 function AboveBelow({ close, ma }: { close: number; ma: number }) {
@@ -60,13 +20,20 @@ function AboveBelow({ close, ma }: { close: number; ma: number }) {
  * range, and volume from the raw bars, plus indicator/fundamentals stats
  * from the most recent signal snapshot when available. Fully defensive —
  * renders "—" or omits sections when data is missing rather than crashing.
+ *
+ * `showPriceRow` hides the first grid (last price / change / 52W range /
+ * volume) — used on the ticker detail page where KeyStats already covers
+ * that ground and this component's remaining value is the second,
+ * screener-derived grid (RSI / SMA 50 / SMA 200 / ATR / P/B).
  */
 export default function PriceStats({
   bars,
   latestSnapshot,
+  showPriceRow = true,
 }: {
   bars: BarRow[];
   latestSnapshot?: SignalSnapshot | null;
+  showPriceRow?: boolean;
 }) {
   if (bars.length === 0) {
     return null;
@@ -93,30 +60,32 @@ export default function PriceStats({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-        <Tile
-          label="Last price"
-          value={formatNum(last.close)}
-          valueClassName="text-2xl"
-        />
-        <Tile
-          label="Change"
-          value={
-            changeAbs === null ? (
-              "—"
-            ) : (
-              <>
-                {changeAbs >= 0 ? "+" : ""}
-                {formatNum(changeAbs)} ({changePct! >= 0 ? "+" : ""}
-                {formatNum(changePct)}%)
-              </>
-            )
-          }
-          tone={changeTone}
-        />
-        <Tile label="52W Range" value={`${formatNum(low52)} – ${formatNum(high52)}`} />
-        <Tile label="Volume" value={formatVolume(last.volume)} />
-      </div>
+      {showPriceRow && (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          <Tile
+            label="Last price"
+            value={formatNum(last.close)}
+            valueClassName="text-2xl"
+          />
+          <Tile
+            label="Change"
+            value={
+              changeAbs === null ? (
+                "—"
+              ) : (
+                <>
+                  {changeAbs >= 0 ? "+" : ""}
+                  {formatNum(changeAbs)} ({changePct! >= 0 ? "+" : ""}
+                  {formatNum(changePct)}%)
+                </>
+              )
+            }
+            tone={changeTone}
+          />
+          <Tile label="52W Range" value={`${formatNum(low52)} – ${formatNum(high52)}`} />
+          <Tile label="Volume" value={formatVolume(last.volume)} />
+        </div>
+      )}
 
       {latestSnapshot && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">

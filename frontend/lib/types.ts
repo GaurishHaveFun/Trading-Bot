@@ -154,3 +154,59 @@ export interface LoserRow {
   market_cap: number | null;
   sector: string | null;
 }
+
+/** GET /tickers/{symbol} response.profile — mirrors TickerProfileOut. */
+export interface TickerProfile {
+  long_name: string | null;
+  short_name: string | null;
+  business_summary: string | null;
+  sector: string | null;
+  industry: string | null;
+  employees: number | null;
+  website: string | null;
+  country: string | null;
+  exchange: string | null;
+  currency: string | null;
+}
+
+/** GET /tickers/{symbol} response.stats — mirrors TickerStatsOut. */
+export interface TickerStats {
+  price: number | null;
+  change_pct: number | null;
+  previous_close: number | null;
+  open: number | null;
+  day_high: number | null;
+  day_low: number | null;
+  market_cap: number | null;
+  trailing_pe: number | null;
+  forward_pe: number | null;
+  price_to_book: number | null;
+  eps_trailing: number | null;
+  eps_forward: number | null;
+  dividend_yield: number | null;
+  beta: number | null;
+  fifty_two_week_high: number | null;
+  fifty_two_week_low: number | null;
+  volume: number | null;
+  avg_volume: number | null;
+  avg_volume_10d: number | null;
+}
+
+/** GET /tickers/{symbol} response.targets — mirrors TickerTargetsOut. */
+export interface TickerTargets {
+  mean: number | null;
+  high: number | null;
+  low: number | null;
+  median: number | null;
+  recommendation_key: string | null;
+  analyst_count: number | null;
+}
+
+/** GET /tickers/{symbol} response — mirrors TickerDetailOut. */
+export interface TickerDetail {
+  ticker: string;
+  profile: TickerProfile;
+  stats: TickerStats;
+  targets: TickerTargets;
+  bars: BarRow[];
+}

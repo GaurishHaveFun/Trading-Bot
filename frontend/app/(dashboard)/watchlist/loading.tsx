@@ -1,7 +1,7 @@
 /**
  * Instant loading state for /watchlist while getLosers() resolves against
  * the Render-hosted screener API (can take up to ~30s on cold start).
- * Mirrors WatchlistTable's 5-column layout so the swap-in doesn't jump.
+ * Mirrors WatchlistTable's 6-column layout so the swap-in doesn't jump.
  */
 export default function WatchlistLoading() {
   const rows = Array.from({ length: 10 });
@@ -20,6 +20,7 @@ export default function WatchlistLoading() {
           <thead className="border-b border-white/10">
             <tr>
               <th className="px-4 py-3 text-left font-medium text-foreground-muted">Ticker</th>
+              <th className="px-4 py-3 text-left font-medium text-foreground-muted">Sector</th>
               <th className="px-4 py-3 text-right font-medium text-foreground-muted">Price</th>
               <th className="px-4 py-3 text-right font-medium text-foreground-muted">Change %</th>
               <th className="px-4 py-3 text-right font-medium text-foreground-muted">Mkt cap</th>
@@ -31,6 +32,9 @@ export default function WatchlistLoading() {
               <tr key={i} className="animate-pulse">
                 <td className="px-4 py-3">
                   <div className="h-4 w-14 rounded bg-white/10" />
+                </td>
+                <td className="px-4 py-3">
+                  <div className="h-4 w-20 rounded bg-white/10" />
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="ml-auto h-4 w-16 rounded bg-white/10" />

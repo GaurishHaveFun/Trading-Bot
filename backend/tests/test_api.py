@@ -3,11 +3,19 @@ Everything here mocks the underlying providers/universes — no real network
 calls — so this file runs under `pytest -m "not integration"`."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from screener.api.app import app, merge_losers_quotes
+from screener.api.app import (
+    _looks_like_real_symbol,
+    _num,
+    _pick,
+    app,
+    merge_losers_quotes,
+)
+from screener.models import Bar
 
 client = TestClient(app)
 
@@ -199,3 +207,164 @@ def test_losers_falls_back_to_yfinance_only_when_schwab_raises():
     assert len(body) == 1
     assert body[0]["ticker"] == "AAA"
     assert body[0]["sector"] == "Technology"
+
+
+# --- pure helpers: _pick / _num / _looks_like_real_symbol ---
+
+
+def test_pick_returns_first_non_none_value_not_first_truthy():
+    # Regression guard for the `a or b` bug: 0.0 is a legitimate value and
+    # must not be skipped in favor of a later key.
+    assert _pick({"a": 0.0, "b": 5.0}, "a", "b") == 0.0
+
+
+def test_pick_skips_none_and_missing_keys():
+    assert _pick({"a": None, "b": None, "c": 3.0}, "a", "b", "c") == 3.0
+    assert _pick({}, "a", "b") is None
+
+
+def test_num_maps_nan_inf_and_non_numeric_to_none():
+    assert _num(float("nan")) is None
+    assert _num(float("inf")) is None
+    assert _num(float("-inf")) is None
+    assert _num(None) is None
+    assert _num("n/a") is None
+    assert _num(3.5) == 3.5
+    assert _num(0) == 0.0
+
+
+def test_looks_like_real_symbol_rejects_garbage_info():
+    assert _looks_like_real_symbol({"trailingPegRatio": None}) is False
+    assert _looks_like_real_symbol({}) is False
+    assert _looks_like_real_symbol({"regularMarketPrice": 100.0}) is True
+    assert _looks_like_real_symbol({"longName": "Apple Inc."}) is True
+
+
+# --- /tickers/{symbol} ---
+
+
+_FULL_INFO = {
+    "regularMarketPrice": 192.31,
+    "regularMarketChangePercent": -1.85,
+    "regularMarketPreviousClose": 195.9,
+    "regularMarketOpen": 194.0,
+    "regularMarketDayHigh": 196.0,
+    "regularMarketDayLow": 191.0,
+    "marketCap": 3.0e12,
+    "trailingPE": 30.1,
+    "forwardPE": 28.4,
+    "priceToBook": 45.2,
+    "trailingEps": 6.4,
+    "forwardEps": 6.8,
+    "dividendYield": 0.5,
+    "beta": 1.2,
+    "fiftyTwoWeekHigh": 250.0,
+    "fiftyTwoWeekLow": 150.0,
+    "regularMarketVolume": 54_000_000,
+    "averageVolume": 60_000_000,
+    "averageVolume10days": 58_000_000,
+    "longName": "Apple Inc.",
+    "shortName": "Apple",
+    "longBusinessSummary": "Apple designs consumer electronics.",
+    "sector": "Technology",
+    "industry": "Consumer Electronics",
+    "fullTimeEmployees": 164000,
+    "website": "https://www.apple.com",
+    "country": "United States",
+    "fullExchangeName": "NASDAQ",
+    "currency": "USD",
+    "targetMeanPrice": 210.0,
+    "targetHighPrice": 250.0,
+    "targetLowPrice": 180.0,
+    "targetMedianPrice": 205.0,
+    "recommendationKey": "buy",
+    "numberOfAnalystOpinions": 35,
+}
+
+
+def _make_bars(n: int) -> list[Bar]:
+    return [
+        Bar(
+            timestamp=datetime(2026, 1, i + 1, tzinfo=timezone.utc),
+            open=100.0 + i,
+            high=101.0 + i,
+            low=99.0 + i,
+            close=100.5 + i,
+            volume=1_000_000 + i,
+        )
+        for i in range(n)
+    ]
+
+
+class _FakeBarProvider:
+    def __init__(self, bars: list[Bar] | None = None, error: Exception | None = None):
+        self._bars = bars or []
+        self._error = error
+
+    async def get_bars(self, symbol, start, end, interval="1d"):
+        if self._error is not None:
+            raise self._error
+        return self._bars
+
+
+def test_ticker_detail_full_shape():
+    with patch("screener.api.app._fetch_quote_info", return_value=_FULL_INFO), \
+         patch("screener.api.app._get_bar_provider", return_value=_FakeBarProvider(_make_bars(2))):
+        resp = client.get("/tickers/AAPL")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ticker"] == "AAPL"
+    assert body["profile"]["long_name"] == "Apple Inc."
+    assert body["profile"]["employees"] == 164000
+    assert body["stats"]["price"] == 192.31
+    assert body["stats"]["market_cap"] == 3.0e12
+    assert body["targets"]["mean"] == 210.0
+    assert body["targets"]["recommendation_key"] == "buy"
+    assert len(body["bars"]) == 2
+    assert body["bars"][0]["ticker"] == "AAPL"
+
+
+def test_ticker_detail_lowercases_symbol_to_uppercase_ticker():
+    with patch("screener.api.app._fetch_quote_info", return_value=_FULL_INFO), \
+         patch("screener.api.app._get_bar_provider", return_value=_FakeBarProvider([])):
+        resp = client.get("/tickers/aapl")
+
+    assert resp.status_code == 200
+    assert resp.json()["ticker"] == "AAPL"
+
+
+def test_ticker_detail_404_for_empty_info():
+    with patch("screener.api.app._fetch_quote_info", return_value={}), \
+         patch("screener.api.app._get_bar_provider", return_value=_FakeBarProvider([])):
+        resp = client.get("/tickers/ZZZZZZZZ")
+
+    assert resp.status_code == 404
+
+
+def test_ticker_detail_404_not_500_when_quote_fetch_raises():
+    with patch("screener.api.app._fetch_quote_info", side_effect=RuntimeError("boom")), \
+         patch("screener.api.app._get_bar_provider", return_value=_FakeBarProvider([])):
+        resp = client.get("/tickers/AAPL")
+
+    assert resp.status_code == 404
+
+
+def test_ticker_detail_returns_empty_bars_when_bar_provider_raises():
+    with patch("screener.api.app._fetch_quote_info", return_value=_FULL_INFO), \
+         patch("screener.api.app._get_bar_provider", return_value=_FakeBarProvider(error=RuntimeError("no bars"))):
+        resp = client.get("/tickers/AAPL")
+
+    assert resp.status_code == 200
+    assert resp.json()["bars"] == []
+
+
+def test_ticker_detail_nan_stat_becomes_null_in_json():
+    info = dict(_FULL_INFO)
+    info["trailingPE"] = float("nan")
+    with patch("screener.api.app._fetch_quote_info", return_value=info), \
+         patch("screener.api.app._get_bar_provider", return_value=_FakeBarProvider([])):
+        resp = client.get("/tickers/AAPL")
+
+    assert resp.status_code == 200
+    assert resp.json()["stats"]["trailing_pe"] is None

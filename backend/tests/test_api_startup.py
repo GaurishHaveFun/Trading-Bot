@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+import screener.api.app as api_app
 from screener.api.app import app
 from screener.config import Settings
 
@@ -50,6 +51,24 @@ def test_lifespan_is_noop_when_env_var_absent(tmp_path, monkeypatch):
 
     token_path = tmp_path / "schwab_token.json"
     assert not token_path.exists()
+
+
+def test_lifespan_builds_bar_provider_and_closes_cache_on_exit(tmp_path, monkeypatch):
+    monkeypatch.delenv("SCHWAB_TOKEN_JSON", raising=False)
+    settings = _settings(tmp_path)
+
+    with patch("screener.api.app.get_settings", return_value=settings), \
+         patch("screener.api.app._BAR_CACHE_PATH", tmp_path / "bars.db"):
+        assert api_app._bar_provider is None
+        with TestClient(app) as client:
+            resp = client.get("/health")
+            assert resp.status_code == 200
+            assert api_app._bar_provider is not None
+            assert api_app._bar_cache is not None
+
+        # After lifespan shutdown, the cache is closed and globals reset.
+        assert api_app._bar_provider is None
+        assert api_app._bar_cache is None
 
 
 def test_lifespan_is_noop_when_env_var_whitespace_only(tmp_path, monkeypatch):

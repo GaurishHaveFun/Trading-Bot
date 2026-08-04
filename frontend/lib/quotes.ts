@@ -1,4 +1,4 @@
-import type { LoserRow, QuoteRow } from "./types";
+import type { LoserRow, QuoteRow, TickerDetail } from "./types";
 
 /**
  * Thin client for the FastAPI screener service (backend/src/screener/api/app.py).
@@ -53,5 +53,32 @@ export async function getLosers(limit = 20): Promise<LoserRow[]> {
   } catch (err) {
     console.error("getLosers: failed to reach screener API", err);
     return [];
+  }
+}
+
+/**
+ * Full company detail for one ticker (profile + stats + targets + bars).
+ * Same swallow-errors contract as getQuotes/getLosers, but returns a single
+ * nullable object instead of an array — "no detail available" is a normal,
+ * checkable result, not an exception callers need to catch. A 404 (unknown
+ * symbol) is logged at info level since it's an expected outcome, not a
+ * screener API failure.
+ */
+export async function getTickerDetail(symbol: string): Promise<TickerDetail | null> {
+  try {
+    const url = `${BASE_URL}/tickers/${encodeURIComponent(symbol)}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) {
+      if (res.status === 404) {
+        console.info(`getTickerDetail: no data for ${symbol}`);
+      } else {
+        console.error(`getTickerDetail: screener API returned ${res.status} ${res.statusText}`);
+      }
+      return null;
+    }
+    return (await res.json()) as TickerDetail;
+  } catch (err) {
+    console.error("getTickerDetail: failed to reach screener API", err);
+    return null;
   }
 }
