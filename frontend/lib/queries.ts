@@ -6,6 +6,7 @@ import type {
   RunRow,
   RunWithSignals,
   SignalRow,
+  SignalSnapshot,
   SignalWithRules,
   TickerHistory,
 } from "./types";
@@ -255,4 +256,30 @@ export async function getTickerHistory(ticker: string): Promise<TickerHistory> {
   const bars = barRows.map((r) => mapBar(r as Record<string, unknown>));
 
   return { ticker, signals, bars };
+}
+
+/**
+ * The most recent signal snapshot per ticker across the whole universe
+ * (`DISTINCT ON (ticker) ... ORDER BY ticker, timestamp DESC`), used as the
+ * comparison population for the Patterns page. Snapshot is a JSONB bag (see
+ * SignalSnapshot) so no numeric coercion is needed here — the caller reads
+ * its fields directly.
+ */
+export async function getLatestSignalSnapshots(): Promise<
+  { ticker: string; timestamp: string; snapshot: SignalSnapshot }[]
+> {
+  const rows = await sql`
+    SELECT DISTINCT ON (ticker) ticker, timestamp, snapshot
+    FROM signals
+    WHERE snapshot IS NOT NULL
+    ORDER BY ticker, timestamp DESC
+  `;
+  return rows.map((row) => {
+    const r = row as Record<string, unknown>;
+    return {
+      ticker: String(r.ticker),
+      timestamp: toIso(r.timestamp),
+      snapshot: r.snapshot as SignalSnapshot,
+    };
+  });
 }

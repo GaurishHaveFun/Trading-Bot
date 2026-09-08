@@ -132,6 +132,16 @@ export interface PaperAccountHistoryRow {
 }
 
 // ---------------------------------------------------------------------------
+// Model picks (single-user "I'd buy this" flags). Schema owned by the
+// frontend itself (see lib/model-schema.ts), like paper trading above.
+// ---------------------------------------------------------------------------
+
+export interface ModelPickRow {
+  ticker: string;
+  added_at: string;
+}
+
+// ---------------------------------------------------------------------------
 // Screener FastAPI client types (backend/src/screener/api/app.py). These come
 // back as real JSON numbers from FastAPI, not Postgres numeric-as-string, so
 // no num()/numOrNull() coercion is needed for these shapes.

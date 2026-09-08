@@ -32,6 +32,12 @@ export default function DashboardLayout({
             >
               Screener
             </Link>
+            <Link
+              href="/patterns"
+              className="text-foreground-muted transition-colors hover:text-foreground"
+            >
+              Patterns
+            </Link>
           </nav>
           <SignOutButton />
         </div>

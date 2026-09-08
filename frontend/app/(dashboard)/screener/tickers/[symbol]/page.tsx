@@ -2,11 +2,13 @@ import Link from "next/link";
 import AnalystTargets from "@/components/AnalystTargets";
 import CompanyProfile from "@/components/CompanyProfile";
 import KeyStats from "@/components/KeyStats";
+import ModelToggleButton from "@/components/ModelToggleButton";
 import PriceChart from "@/components/PriceChart";
 import PriceStats from "@/components/PriceStats";
 import RefreshButton from "@/components/RefreshButton";
 import ScoreGauge from "@/components/ScoreGauge";
 import { formatNum } from "@/lib/format";
+import { isTickerInModel } from "@/lib/model";
 import { getTickerHistory } from "@/lib/queries";
 import { getTickerDetail } from "@/lib/quotes";
 import type { TickerHistory } from "@/lib/types";
@@ -37,9 +39,10 @@ export default async function TickerPage({
   const { symbol } = await params;
   const ticker = symbol.toUpperCase();
 
-  const [detail, { history, error }] = await Promise.all([
+  const [detail, { history, error }, isInModel] = await Promise.all([
     getTickerDetail(ticker),
     loadHistory(ticker),
+    isTickerInModel(ticker),
   ]);
 
   // A successful API call returning bars: [] (e.g. a delisted symbol) should
@@ -132,7 +135,10 @@ export default async function TickerPage({
       <div className="glass-panel panel-enter p-4">
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-sm font-medium text-foreground-muted">Price Chart</h2>
-          <RefreshButton />
+          <div className="flex items-center gap-2">
+            <ModelToggleButton ticker={ticker} initialInModel={isInModel} />
+            <RefreshButton />
+          </div>
         </div>
         <PriceChart bars={chartBars} />
       </div>
