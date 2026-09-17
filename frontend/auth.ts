@@ -5,9 +5,15 @@ import bcrypt from "bcryptjs";
 /**
  * Auth.js v5 (next-auth@beta) configuration.
  *
- * Single hardcoded dashboard user, validated against env vars:
- *   - DASHBOARD_USER: plain-text username, compared with a strict string match.
- *   - DASHBOARD_PASSWORD_HASH: a bcrypt hash, compared with bcryptjs.compare.
+ * Up to two hardcoded dashboard users, each validated against its own pair
+ * of env vars:
+ *   - DASHBOARD_USER / DASHBOARD_USER_2: plain-text username, compared with
+ *     a strict string match.
+ *   - DASHBOARD_PASSWORD_HASH / DASHBOARD_PASSWORD_HASH_2: a bcrypt hash,
+ *     compared with bcryptjs.compare.
+ *
+ * The second user is optional — if either DASHBOARD_USER_2 or
+ * DASHBOARD_PASSWORD_HASH_2 is unset, that branch simply never matches.
  *
  * To generate DASHBOARD_PASSWORD_HASH locally, run:
  *
@@ -44,21 +50,24 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         const expectedUser = process.env.DASHBOARD_USER;
         const expectedHash = process.env.DASHBOARD_PASSWORD_HASH;
 
-        if (!expectedUser || !expectedHash) {
-          // Auth isn't configured yet — fail closed.
-          return null;
+        if (expectedUser && expectedHash && username === expectedUser) {
+          const passwordMatches = await bcrypt.compare(password, expectedHash);
+          if (passwordMatches) {
+            return { id: "dashboard-user", name: username };
+          }
         }
 
-        if (username !== expectedUser) {
-          return null;
+        const expectedUser2 = process.env.DASHBOARD_USER_2;
+        const expectedHash2 = process.env.DASHBOARD_PASSWORD_HASH_2;
+
+        if (expectedUser2 && expectedHash2 && username === expectedUser2) {
+          const passwordMatches2 = await bcrypt.compare(password, expectedHash2);
+          if (passwordMatches2) {
+            return { id: "dashboard-user-2", name: username };
+          }
         }
 
-        const passwordMatches = await bcrypt.compare(password, expectedHash);
-        if (!passwordMatches) {
-          return null;
-        }
-
-        return { id: "dashboard-user", name: username };
+        return null;
       },
     }),
   ],
