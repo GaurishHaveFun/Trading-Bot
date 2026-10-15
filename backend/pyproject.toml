@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "anthropic>=1.7.0",
     "apscheduler>=3.10",
     "asteval>=1.0.9",
     "fastapi>=0.115.0",
+    "google-genai>=2.24.0",
     "httpx>=0.28.1",
     "numpy>=2.2.6",
     "pandas>=3.0.3",
@@ -41,4 +43,5 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "integration: marks tests as requiring network access (deselect with -m 'not integration')",
+    "schwab_ok: test patches Schwab quotes itself (opts out of the autouse Schwab-disabled fixture in test_api.py)",
 ]

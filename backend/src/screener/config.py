@@ -30,6 +30,24 @@ class Settings(BaseSettings):
     database_url: str = ""
     render_api_key: str = ""
     render_service_id: str = ""
+    anthropic_api_key: str = ""
+    analysis_model: str = "claude-opus-5"
+    analysis_ttl_minutes: int = 360
+    analysis_provider: str = "gemini"
+    gemini_api_key: str = ""
+    # Pinned to a dated model rather than the rolling "gemini-flash-latest"
+    # alias: that alias can roll onto a newer model with no free-tier quota
+    # (this happened -- see gemini_provider.py's 429 handling), silently
+    # breaking the analysis feature. Override via GEMINI_MODEL if needed.
+    gemini_model: str = "gemini-3.5-flash"
+    # Off by default: Google Search grounding (the `google_search` tool) is
+    # not free-tier eligible on Gemini -- attaching it returns
+    # 429 RESOURCE_EXHAUSTED on every model tried, even when plain
+    # generate_content calls succeed. Leaving this off keeps the
+    # out-of-the-box config working. Set ANALYSIS_WEB_SEARCH=true if you're
+    # on a paid Gemini plan, or if using the Anthropic provider, whose web
+    # search tool has no such free-tier restriction.
+    analysis_web_search: bool = False
 
 
 class RuleConfig(BaseModel):

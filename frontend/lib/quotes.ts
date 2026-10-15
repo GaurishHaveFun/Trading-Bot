@@ -1,4 +1,4 @@
-import type { LoserRow, QuoteRow, TickerDetail } from "./types";
+import type { LoserRow, QuoteRow, TickerAnalysisResponse, TickerDetail } from "./types";
 
 /**
  * Thin client for the FastAPI screener service (backend/src/screener/api/app.py).
@@ -79,6 +79,30 @@ export async function getTickerDetail(symbol: string): Promise<TickerDetail | nu
     return (await res.json()) as TickerDetail;
   } catch (err) {
     console.error("getTickerDetail: failed to reach screener API", err);
+    return null;
+  }
+}
+
+/**
+ * Cached AI analysis for a ticker (GET /tickers/{symbol}/analysis). This
+ * endpoint is cheap (no LLM call) and always returns HTTP 200 — a
+ * `status: "none"` body when nothing is cached yet, not a 404 — so unlike
+ * getTickerDetail there's no "expected 404" case to special-case here.
+ * Same swallow-errors contract as the rest of this module: any fetch/HTTP
+ * failure logs and returns null, so callers can treat "no analysis
+ * available" as a normal, checkable result rather than an exception.
+ */
+export async function getTickerAnalysis(symbol: string): Promise<TickerAnalysisResponse | null> {
+  try {
+    const url = `${BASE_URL}/tickers/${encodeURIComponent(symbol)}/analysis?max_age_minutes=360`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) {
+      console.error(`getTickerAnalysis: screener API returned ${res.status} ${res.statusText}`);
+      return null;
+    }
+    return (await res.json()) as TickerAnalysisResponse;
+  } catch (err) {
+    console.error("getTickerAnalysis: failed to reach screener API", err);
     return null;
   }
 }

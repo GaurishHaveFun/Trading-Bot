@@ -93,3 +93,11 @@ def test_settings_default_watchlist_path():
     settings = Settings(_env_file=None)
     assert settings.watchlist_path == "config/watchlist.yaml"
 
+
+def test_settings_default_analysis_fields():
+    from screener.config import Settings
+    settings = Settings(_env_file=None)
+    assert settings.anthropic_api_key == ""
+    assert settings.analysis_model == "claude-opus-5"
+    assert settings.analysis_ttl_minutes == 360
+

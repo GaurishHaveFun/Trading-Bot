@@ -21,3 +21,14 @@ services:
         value: .cache/schwab_token.json
       - key: DATA_PROVIDER
         value: schwab
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ANALYSIS_PROVIDER
+        value: gemini
+      # Google Search grounding is not free-tier eligible on Gemini (returns
+      # 429 RESOURCE_EXHAUSTED); keep this false unless on a paid Gemini
+      # plan or using ANALYSIS_PROVIDER=anthropic instead.
+      - key: ANALYSIS_WEB_SEARCH
+        value: "false"

@@ -220,3 +220,38 @@ export interface TickerDetail {
   targets: TickerTargets;
   bars: BarRow[];
 }
+
+// The following mirror the backend's AI analysis models
+// (GET/POST /tickers/{symbol}/analysis).
+
+/** One cited driver behind an AI analysis headline. */
+export interface TickerAnalysisDriver {
+  title: string;
+  explanation: string;
+  evidence_type: "news" | "sector" | "technical" | "fundamental";
+}
+
+/** One source link cited by an AI analysis. */
+export interface TickerAnalysisSource {
+  title: string;
+  url: string;
+}
+
+/** The AI-generated analysis payload itself. */
+export interface TickerAnalysis {
+  headline: string;
+  confidence: "high" | "medium" | "low";
+  drivers: TickerAnalysisDriver[];
+  sector_context: string | null;
+  what_to_watch: string[];
+  sources: TickerAnalysisSource[];
+}
+
+/** GET/POST /tickers/{symbol}/analysis response. */
+export interface TickerAnalysisResponse {
+  status: "ready" | "none";
+  generated_at: string | null;
+  age_minutes: number | null;
+  model: string | null;
+  analysis: TickerAnalysis | null;
+}

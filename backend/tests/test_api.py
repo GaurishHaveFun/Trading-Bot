@@ -4,6 +4,7 @@ calls — so this file runs under `pytest -m "not integration"`."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import pytest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -43,6 +44,19 @@ def _patch_universes(yfinance_universe: _FakeUniverse, schwab_universe: _FakeUni
         patch("screener.api.app.SchwabLosersUniverse", return_value=schwab_universe),
         patch("screener.api.app.load_watchlist", return_value=set()),
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_schwab_by_default(request):
+    """Keep tests hermetic: Schwab quotes fail unless a test patches them."""
+    if "schwab_ok" in request.keywords:
+        yield
+        return
+    with patch(
+        "screener.api.app._fetch_schwab_quotes_raw",
+        side_effect=RuntimeError("no schwab in tests"),
+    ):
+        yield
 
 
 # --- /health ---
@@ -368,3 +382,83 @@ def test_ticker_detail_nan_stat_becomes_null_in_json():
 
     assert resp.status_code == 200
     assert resp.json()["stats"]["trailing_pe"] is None
+
+
+# --- Schwab-first quotes ---
+
+_SCHWAB_AAPL = {
+    "regularMarketPrice": 200.0,
+    "regularMarketPreviousClose": 204.0,
+    "regularMarketChangePercent": -1.96,
+    "currency": "USD",
+}
+
+
+@pytest.mark.schwab_ok
+def test_quotes_use_schwab_without_touching_yfinance():
+    with patch("screener.api.app._fetch_schwab_quotes_raw", return_value=_SCHWAB_AAPL and {"AAPL": _SCHWAB_AAPL}) as m, \
+         patch("screener.api.app._fetch_quote_info", side_effect=AssertionError("yfinance used")):
+        resp = client.get("/quotes", params={"symbols": "aapl"})
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"ticker": "AAPL", "price": 200.0, "change_pct": -1.96, "previous_close": 204.0, "currency": "USD"}
+    ]
+    assert m.call_count == 1
+
+
+@pytest.mark.schwab_ok
+def test_quotes_fall_back_to_yfinance_when_schwab_fails():
+    with patch("screener.api.app._fetch_schwab_quotes_raw", side_effect=RuntimeError("SchwabAuthExpired")), \
+         patch("screener.api.app._fetch_quote_info", return_value={"regularMarketPrice": 5.0}):
+        resp = client.get("/quotes", params={"symbols": "XYZ"})
+    assert resp.status_code == 200
+    assert resp.json()[0]["price"] == 5.0
+
+
+@pytest.mark.schwab_ok
+def test_quotes_yfinance_fills_symbols_schwab_missed_and_never_500s():
+    with patch("screener.api.app._fetch_schwab_quotes_raw", return_value={"AAPL": _SCHWAB_AAPL}), \
+         patch("screener.api.app._fetch_quote_info", side_effect=RuntimeError("401 Invalid Crumb")):
+        resp = client.get("/quotes", params={"symbols": "AAPL,ZZZ"})
+    assert resp.status_code == 200
+    assert [q["ticker"] for q in resp.json()] == ["AAPL"]
+
+
+@pytest.mark.schwab_ok
+def test_losers_price_from_schwab_and_sector_from_static_map():
+    yf_u = _FakeUniverse({})
+    sch_u = _FakeUniverse({"AAPL": {"change_pct": -2.0, "market_cap": 3e12, "sector": None}})
+    patchers = _patch_universes(yf_u, sch_u)
+    with patchers[0], patchers[1], patchers[2], \
+         patch("screener.api.app._fetch_schwab_quotes_raw", return_value={"AAPL": _SCHWAB_AAPL}), \
+         patch("screener.api.app._fetch_quote_info", side_effect=AssertionError("yfinance used")):
+        resp = client.get("/losers")
+    assert resp.status_code == 200
+    row = resp.json()[0]
+    assert row["ticker"] == "AAPL"
+    assert row["price"] == 200.0
+    assert row["sector"] == "Technology"
+    assert row["change_pct"] == -2.0
+
+
+@pytest.mark.schwab_ok
+def test_losers_non_watchlist_sector_falls_back_to_yfinance():
+    yf_u = _FakeUniverse({})
+    sch_u = _FakeUniverse({"ZZZ": {"change_pct": -3.0, "market_cap": 1e11, "sector": None}})
+    patchers = _patch_universes(yf_u, sch_u)
+    with patchers[0], patchers[1], patchers[2], \
+         patch("screener.api.app._fetch_schwab_quotes_raw", return_value={"ZZZ": _SCHWAB_AAPL}), \
+         patch("screener.api.app._fetch_quote_info", return_value={"sector": "Energy"}):
+        row = client.get("/losers").json()[0]
+    assert row["price"] == 200.0
+    assert row["sector"] == "Energy"
+
+
+def test_shape_quote_entry_reads_real_schwab_fields():
+    from screener.api.schwab_quotes import shape_quote_entry
+
+    out = shape_quote_entry({"quote": {"lastPrice": 10.5, "closePrice": 11.0, "netPercentChange": -4.5}})
+    assert out["regularMarketPrice"] == 10.5
+    assert out["regularMarketPreviousClose"] == 11.0
+    assert out["regularMarketChangePercent"] == -4.5
+    assert shape_quote_entry({"quote": {}}) is None

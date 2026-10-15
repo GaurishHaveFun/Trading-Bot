@@ -1,4 +1,5 @@
 import Link from "next/link";
+import AiAnalysis from "@/components/AiAnalysis";
 import AnalystTargets from "@/components/AnalystTargets";
 import CompanyProfile from "@/components/CompanyProfile";
 import KeyStats from "@/components/KeyStats";
@@ -10,7 +11,7 @@ import ScoreGauge from "@/components/ScoreGauge";
 import { formatNum } from "@/lib/format";
 import { isTickerInModel } from "@/lib/model";
 import { getTickerHistory } from "@/lib/queries";
-import { getTickerDetail } from "@/lib/quotes";
+import { getTickerAnalysis, getTickerDetail } from "@/lib/quotes";
 import type { TickerHistory } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -39,10 +40,11 @@ export default async function TickerPage({
   const { symbol } = await params;
   const ticker = symbol.toUpperCase();
 
-  const [detail, { history, error }, isInModel] = await Promise.all([
+  const [detail, { history, error }, isInModel, analysis] = await Promise.all([
     getTickerDetail(ticker),
     loadHistory(ticker),
     isTickerInModel(ticker),
+    getTickerAnalysis(ticker),
   ]);
 
   // A successful API call returning bars: [] (e.g. a delisted symbol) should
@@ -142,6 +144,8 @@ export default async function TickerPage({
         </div>
         <PriceChart bars={chartBars} />
       </div>
+
+      <AiAnalysis ticker={ticker} initial={analysis} changePct={stats?.change_pct ?? null} />
 
       {stats && <KeyStats stats={stats} />}
 

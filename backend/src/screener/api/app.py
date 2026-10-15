@@ -24,16 +24,33 @@ pattern rather than reimplementing anything."""
 from __future__ import annotations
 
 import asyncio
-import math
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
-import yfinance as yf
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
+from screener.analysis import cache as analysis_cache
+from screener.analysis import context as analysis_context
+from screener.analysis import engine as analysis_engine
+from screener.analysis.models import CachedAnalysis, TickerAnalysis
+from screener.api.schwab_quotes import fetch_schwab_quotes as _fetch_schwab_quotes_raw
+from screener.api.schwab_quotes import static_sector
+from screener.api.ticker_data import (
+    TickerProfileOut,
+    TickerStatsOut,
+    TickerTargetsOut,
+    fetch_quote_info as _fetch_quote_info,
+    looks_like_real_symbol as _looks_like_real_symbol,
+    num as _num,
+    pick as _pick,
+    to_profile as _to_profile,
+    to_stats as _to_stats,
+    to_targets as _to_targets,
+)
 from screener.config import get_settings, load_watchlist
 from screener.data.base import DataProvider
 from screener.data.cache import BarCache
@@ -96,6 +113,18 @@ app = FastAPI(title="Trading Bot API", lifespan=lifespan)
 _QUOTE_SEMAPHORE = asyncio.Semaphore(10)
 _DEFAULT_LOSERS_LIMIT = 20
 
+_ANALYSIS_SEMAPHORE = asyncio.Semaphore(2)
+_analysis_locks: dict[str, asyncio.Lock] = {}
+_ANALYSIS_RECHECK_MAX_AGE_MINUTES = 2
+
+
+def _get_analysis_lock(ticker: str) -> asyncio.Lock:
+    lock = _analysis_locks.get(ticker)
+    if lock is None:
+        lock = asyncio.Lock()
+        _analysis_locks[ticker] = lock
+    return lock
+
 
 class QuoteOut(BaseModel):
     ticker: str
@@ -123,50 +152,6 @@ class BarOut(BaseModel):
     volume: int
 
 
-class TickerProfileOut(BaseModel):
-    long_name: str | None
-    short_name: str | None
-    business_summary: str | None
-    sector: str | None
-    industry: str | None
-    employees: int | None
-    website: str | None
-    country: str | None
-    exchange: str | None
-    currency: str | None
-
-
-class TickerStatsOut(BaseModel):
-    price: float | None
-    change_pct: float | None
-    previous_close: float | None
-    open: float | None
-    day_high: float | None
-    day_low: float | None
-    market_cap: float | None
-    trailing_pe: float | None
-    forward_pe: float | None
-    price_to_book: float | None
-    eps_trailing: float | None
-    eps_forward: float | None
-    dividend_yield: float | None
-    beta: float | None
-    fifty_two_week_high: float | None
-    fifty_two_week_low: float | None
-    volume: float | None
-    avg_volume: float | None
-    avg_volume_10d: float | None
-
-
-class TickerTargetsOut(BaseModel):
-    mean: float | None
-    high: float | None
-    low: float | None
-    median: float | None
-    recommendation_key: str | None
-    analyst_count: int | None
-
-
 class TickerDetailOut(BaseModel):
     ticker: str
     profile: TickerProfileOut
@@ -175,96 +160,12 @@ class TickerDetailOut(BaseModel):
     bars: list[BarOut]
 
 
-def _pick(info: dict, *keys: str):
-    """First key present in `info` with a non-`None` value. Deliberately not
-    `info.get(a) or info.get(b)` — that idiom (used by `/quotes` and
-    `/losers` above) silently discards a legitimate `0.0`/`""`/`False`."""
-    for key in keys:
-        value = info.get(key)
-        if value is not None:
-            return value
-    return None
-
-
-def _num(value) -> float | None:
-    """Coerce `value` to `float`, returning `None` for anything non-numeric,
-    `NaN`, or `±inf`. yfinance routinely puts `float('nan')` into `info`
-    (e.g. `trailingPE` for a loss-making company); Pydantic happily accepts
-    NaN into a `float` field and FastAPI then emits a bare `NaN` token, which
-    is invalid JSON. Every numeric field on the `/tickers/{symbol}` response
-    goes through this helper."""
-    if value is None:
-        return None
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(result) or math.isinf(result):
-        return None
-    return result
-
-
-def _looks_like_real_symbol(info: dict) -> bool:
-    """True if `info` carries any of the fields yfinance only populates for a
-    real, tradeable symbol. yfinance returns a small non-empty dict even for
-    garbage symbols, so truthiness of `info` alone is not a valid check --
-    this is what turns `/tickers/ZZZZZZ` into a clean 404."""
-    return any(
-        info.get(key) is not None
-        for key in ("regularMarketPrice", "currentPrice", "longName", "shortName")
-    )
-
-
-def _to_profile(info: dict) -> TickerProfileOut:
-    employees = _pick(info, "fullTimeEmployees")
-    return TickerProfileOut(
-        long_name=_pick(info, "longName"),
-        short_name=_pick(info, "shortName"),
-        business_summary=_pick(info, "longBusinessSummary"),
-        sector=_pick(info, "sector", "sectorDisp"),
-        industry=_pick(info, "industry", "industryKey"),
-        employees=int(employees) if employees is not None else None,
-        website=_pick(info, "website"),
-        country=_pick(info, "country"),
-        exchange=_pick(info, "fullExchangeName", "exchange"),
-        currency=_pick(info, "currency"),
-    )
-
-
-def _to_stats(info: dict) -> TickerStatsOut:
-    return TickerStatsOut(
-        price=_num(_pick(info, "regularMarketPrice", "currentPrice")),
-        change_pct=_num(_pick(info, "regularMarketChangePercent")),
-        previous_close=_num(_pick(info, "regularMarketPreviousClose", "previousClose")),
-        open=_num(_pick(info, "regularMarketOpen", "open")),
-        day_high=_num(_pick(info, "regularMarketDayHigh", "dayHigh")),
-        day_low=_num(_pick(info, "regularMarketDayLow", "dayLow")),
-        market_cap=_num(_pick(info, "marketCap")),
-        trailing_pe=_num(_pick(info, "trailingPE")),
-        forward_pe=_num(_pick(info, "forwardPE")),
-        price_to_book=_num(_pick(info, "priceToBook")),
-        eps_trailing=_num(_pick(info, "trailingEps")),
-        eps_forward=_num(_pick(info, "forwardEps")),
-        dividend_yield=_num(_pick(info, "dividendYield", "trailingAnnualDividendYield")),
-        beta=_num(_pick(info, "beta")),
-        fifty_two_week_high=_num(_pick(info, "fiftyTwoWeekHigh")),
-        fifty_two_week_low=_num(_pick(info, "fiftyTwoWeekLow")),
-        volume=_num(_pick(info, "regularMarketVolume", "volume")),
-        avg_volume=_num(_pick(info, "averageVolume")),
-        avg_volume_10d=_num(_pick(info, "averageVolume10days", "averageDailyVolume10Day")),
-    )
-
-
-def _to_targets(info: dict) -> TickerTargetsOut:
-    analyst_count = _pick(info, "numberOfAnalystOpinions")
-    return TickerTargetsOut(
-        mean=_num(_pick(info, "targetMeanPrice")),
-        high=_num(_pick(info, "targetHighPrice")),
-        low=_num(_pick(info, "targetLowPrice")),
-        median=_num(_pick(info, "targetMedianPrice")),
-        recommendation_key=_pick(info, "recommendationKey"),
-        analyst_count=int(analyst_count) if analyst_count is not None else None,
-    )
+class TickerAnalysisOut(BaseModel):
+    status: Literal["ready", "none"]
+    generated_at: datetime | None
+    age_minutes: int | None
+    model: str | None
+    analysis: TickerAnalysis | None
 
 
 def _get_bar_provider() -> DataProvider:
@@ -295,14 +196,6 @@ async def _fetch_bars(symbol: str, days: int = _DETAIL_BAR_DAYS) -> list[Bar]:
             return []
 
 
-def _fetch_quote_info(symbol: str) -> dict | None:
-    """Blocking single-symbol yfinance lookup. Mirrors
-    `LosersUniverse._fetch_quote`/`factory._enrich_industry_sector`'s
-    identical `yf.Ticker(symbol).info` pattern — call via `asyncio.to_thread`
-    only. Returns `None` on any fetch error (logged by the caller)."""
-    return yf.Ticker(symbol).info
-
-
 async def _fetch_quote(symbol: str) -> dict | None:
     """Async, semaphore-bounded wrapper around `_fetch_quote_info`. Returns
     `None` (and logs a structlog warning) on any fetch failure or empty
@@ -318,6 +211,17 @@ async def _fetch_quote(symbol: str) -> dict | None:
         logger.warning("quote_fetch_empty", ticker=symbol)
         return None
     return info
+
+
+async def _fetch_schwab_quotes(symbols: list[str]) -> dict[str, dict]:
+    """Primary quote source (works on Render). Never raises: any Schwab
+    failure (SchwabAuthExpired, network, ...) is logged and yields {} so
+    callers fall back to the yfinance path."""
+    try:
+        return await _fetch_schwab_quotes_raw(symbols)
+    except Exception as exc:
+        logger.warning("schwab_quotes_unavailable", error=str(exc), symbols=symbols)
+        return {}
 
 
 def merge_losers_quotes(
@@ -365,6 +269,14 @@ async def _fetch_schwab_losers_quotes(watchlist: set[str]) -> dict[str, dict]:
     return await universe.get_quotes()
 
 
+async def _schwab_or_yfinance(symbol: str, schwab: dict[str, dict]) -> dict | None:
+    """Schwab quote if we have one, else the (best-effort) yfinance path."""
+    info = schwab.get(symbol)
+    if info:
+        return info
+    return await _fetch_quote(symbol)
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
@@ -373,7 +285,10 @@ async def health() -> dict:
 @app.get("/quotes", response_model=list[QuoteOut])
 async def get_quotes(symbols: str = Query(..., description="Comma-separated tickers")) -> list[QuoteOut]:
     tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    infos = await asyncio.gather(*(_fetch_quote(t) for t in tickers))
+    schwab = await _fetch_schwab_quotes(tickers)
+    infos = await asyncio.gather(
+        *(_schwab_or_yfinance(t, schwab) for t in tickers)
+    )
 
     results: list[QuoteOut] = []
     for ticker, info in zip(tickers, infos):
@@ -414,13 +329,30 @@ async def get_losers(limit: int = Query(_DEFAULT_LOSERS_LIMIT, ge=1, le=100)) ->
 
     ranked = merge_losers_quotes(yfinance_quotes, schwab_quotes, limit)
 
-    prices = await asyncio.gather(*(_fetch_quote(ticker) for ticker, _ in ranked))
+    schwab_prices = await _fetch_schwab_quotes([t for t, _ in ranked])
+
+    async def _price_info(ticker: str, meta: dict) -> dict | None:
+        # yfinance is only needed when Schwab has no price, or when no
+        # sector is known from the meta / static map.
+        info = schwab_prices.get(ticker)
+        if info and (meta.get("sector") or static_sector(ticker)):
+            return info
+        yf_info = await _fetch_quote(ticker)
+        if info:
+            return {**info, "sector": (yf_info or {}).get("sector")}
+        return yf_info
+
+    prices = await asyncio.gather(*(_price_info(t, m) for t, m in ranked))
     results: list[LoserOut] = []
     for (ticker, meta), info in zip(ranked, prices):
         price = None
         if info is not None:
             price = info.get("regularMarketPrice") or info.get("currentPrice")
-        sector = meta.get("sector") or (info.get("sector") if info else None)
+        sector = (
+            meta.get("sector")
+            or static_sector(ticker)
+            or (info.get("sector") if info else None)
+        )
         results.append(
             LoserOut(
                 ticker=ticker,
@@ -458,3 +390,78 @@ async def get_ticker_detail(symbol: str) -> TickerDetailOut:
             for bar in bars
         ],
     )
+
+
+def _to_analysis_out(cached: CachedAnalysis) -> TickerAnalysisOut:
+    age = int((datetime.now(timezone.utc) - cached.generated_at).total_seconds() // 60)
+    return TickerAnalysisOut(
+        status="ready",
+        generated_at=cached.generated_at,
+        age_minutes=age,
+        model=cached.model,
+        analysis=cached.analysis,
+    )
+
+
+_NO_ANALYSIS_OUT = TickerAnalysisOut(status="none", generated_at=None, age_minutes=None, model=None, analysis=None)
+
+
+@app.get("/tickers/{symbol}/analysis", response_model=TickerAnalysisOut)
+async def get_ticker_analysis(
+    symbol: str,
+    max_age_minutes: int = Query(default=None, ge=1, le=10080),
+) -> TickerAnalysisOut:
+    ticker = symbol.strip().upper()
+    settings = get_settings()
+    effective_max_age = max_age_minutes if max_age_minutes is not None else settings.analysis_ttl_minutes
+    cached = await analysis_cache.get_fresh(ticker, effective_max_age)
+    if cached is None:
+        return _NO_ANALYSIS_OUT
+    return _to_analysis_out(cached)
+
+
+@app.post("/tickers/{symbol}/analysis", response_model=TickerAnalysisOut)
+async def post_ticker_analysis(symbol: str) -> TickerAnalysisOut:
+    ticker = symbol.strip().upper()
+
+    async with _get_analysis_lock(ticker):
+        # Re-check with a short freshness window: if another waiter already
+        # generated+cached an analysis for this ticker while we were
+        # blocked on the lock, reuse it instead of calling analyze() again.
+        cached = await analysis_cache.get_fresh(ticker, _ANALYSIS_RECHECK_MAX_AGE_MINUTES)
+        if cached is not None:
+            return _to_analysis_out(cached)
+
+        async with _ANALYSIS_SEMAPHORE:
+            evidence = await analysis_context.build_evidence(ticker)
+            if evidence is None:
+                raise HTTPException(404, f"No data for symbol {ticker}")
+
+            try:
+                result = await analysis_engine.analyze(evidence)
+            except analysis_engine.AnalysisUnavailable as exc:
+                logger.warning("analysis_request_failed", ticker=ticker, error_class=type(exc).__name__)
+                raise HTTPException(503, "AI analysis is not configured (missing ANTHROPIC_API_KEY)") from exc
+            except analysis_engine.AnalysisTimeout as exc:
+                logger.warning("analysis_request_failed", ticker=ticker, error_class=type(exc).__name__)
+                raise HTTPException(504, "AI analysis timed out") from exc
+            except analysis_engine.AnalysisRateLimited as exc:
+                logger.warning("analysis_request_failed", ticker=ticker, error_class=type(exc).__name__)
+                raise HTTPException(429, "AI analysis is rate limited, try again shortly") from exc
+            except (
+                analysis_engine.AnalysisRefused,
+                analysis_engine.AnalysisProviderError,
+                analysis_engine.AnalysisParseError,
+            ) as exc:
+                logger.warning("analysis_request_failed", ticker=ticker, error_class=type(exc).__name__)
+                raise HTTPException(502, "AI analysis failed") from exc
+
+            cached = CachedAnalysis(
+                ticker=ticker,
+                generated_at=datetime.now(timezone.utc),
+                model=get_settings().analysis_model,
+                change_pct=evidence.technicals.get("change_pct_1d"),
+                analysis=result,
+            )
+            await analysis_cache.put(cached)
+            return _to_analysis_out(cached)
