@@ -24,13 +24,14 @@ pattern rather than reimplementing anything."""
 from __future__ import annotations
 
 import asyncio
+import hmac
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from screener.analysis import cache as analysis_cache
@@ -38,7 +39,9 @@ from screener.analysis import context as analysis_context
 from screener.analysis import engine as analysis_engine
 from screener.analysis.models import CachedAnalysis, TickerAnalysis
 from screener.api.schwab_quotes import fetch_schwab_quotes as _fetch_schwab_quotes_raw
+from screener.api.schwab_quotes import fetch_schwab_fundamentals as _fetch_schwab_fundamentals_raw
 from screener.api.schwab_quotes import static_sector
+from screener.api.yahoo_snapshot import get_store as _get_snapshot_store
 from screener.api.ticker_data import (
     TickerProfileOut,
     TickerStatsOut,
@@ -158,6 +161,10 @@ class TickerDetailOut(BaseModel):
     stats: TickerStatsOut
     targets: TickerTargetsOut
     bars: list[BarOut]
+    # Additive, optional: which sources fed this response ("yfinance",
+    # "snapshot", "schwab") and when the stored Yahoo snapshot was taken.
+    data_sources: list[str] = []
+    snapshot_fetched_at: datetime | None = None
 
 
 class TickerAnalysisOut(BaseModel):
@@ -222,6 +229,67 @@ async def _fetch_schwab_quotes(symbols: list[str]) -> dict[str, dict]:
     except Exception as exc:
         logger.warning("schwab_quotes_unavailable", error=str(exc), symbols=symbols)
         return {}
+
+
+async def _fetch_schwab_fundamentals(symbol: str) -> dict | None:
+    """Schwab instruments/fundamental data shaped like a yfinance info dict.
+    Never raises: failures are logged and yield None."""
+    try:
+        return await _fetch_schwab_fundamentals_raw(symbol)
+    except Exception as exc:
+        logger.warning("schwab_fundamentals_unavailable", ticker=symbol, error=str(exc))
+        return None
+
+
+async def _get_snapshot(symbol: str) -> tuple[dict, datetime] | None:
+    """Stored Yahoo snapshot for `symbol`, or None. Never raises."""
+    try:
+        return await _get_snapshot_store().get(symbol)
+    except Exception as exc:
+        logger.warning("yahoo_snapshot_unavailable", ticker=symbol, error=str(exc))
+        return None
+
+
+_LIVE_YFINANCE_TIMEOUT_S = 8.0
+# Intraday fields in a (possibly hours-old) snapshot that would contradict a
+# live Schwab price, so they are dropped when a Schwab quote is available.
+_INTRADAY_KEYS = (
+    "regularMarketOpen", "open", "regularMarketDayHigh", "dayHigh",
+    "regularMarketDayLow", "dayLow", "regularMarketVolume", "volume",
+)
+
+
+async def _live_yfinance_info(symbol: str) -> dict | None:
+    try:
+        return await asyncio.wait_for(_fetch_quote(symbol), timeout=_LIVE_YFINANCE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        logger.warning("quote_fetch_timeout", ticker=symbol)
+        return None
+
+
+def _present(d: dict | None) -> dict:
+    return {k: v for k, v in (d or {}).items() if v is not None}
+
+
+def merge_ticker_info(
+    live: dict | None,
+    snapshot: dict | None,
+    schwab_quote: dict | None,
+    schwab_fundamentals: dict | None,
+) -> dict:
+    """Merge info dicts, lowest to highest priority: Schwab fundamentals <
+    snapshot < Schwab quote (live price fields beat a stale snapshot) < live
+    yfinance. Pure function."""
+    snap = _present(snapshot)
+    if schwab_quote:
+        for key in _INTRADAY_KEYS:
+            snap.pop(key, None)
+    return {
+        **_present(schwab_fundamentals),
+        **snap,
+        **_present(schwab_quote),
+        **_present(live),
+    }
 
 
 def merge_losers_quotes(
@@ -331,28 +399,28 @@ async def get_losers(limit: int = Query(_DEFAULT_LOSERS_LIMIT, ge=1, le=100)) ->
 
     schwab_prices = await _fetch_schwab_quotes([t for t, _ in ranked])
 
-    async def _price_info(ticker: str, meta: dict) -> dict | None:
-        # yfinance is only needed when Schwab has no price, or when no
-        # sector is known from the meta / static map.
+    async def _price_info(ticker: str, meta: dict) -> tuple[dict | None, str | None]:
+        # Sector order: meta -> static map -> stored Yahoo snapshot -> live
+        # yfinance (last resort, also used when Schwab has no price).
         info = schwab_prices.get(ticker)
-        if info and (meta.get("sector") or static_sector(ticker)):
-            return info
+        sector = meta.get("sector") or static_sector(ticker)
+        if not sector:
+            snap = await _get_snapshot(ticker)
+            if snap:
+                sector = _pick(snap[0], "sector", "sectorDisp")
+        if info and sector:
+            return info, sector
         yf_info = await _fetch_quote(ticker)
-        if info:
-            return {**info, "sector": (yf_info or {}).get("sector")}
-        return yf_info
+        if not sector and yf_info:
+            sector = _pick(yf_info, "sector", "sectorDisp")
+        return (info or yf_info), sector
 
     prices = await asyncio.gather(*(_price_info(t, m) for t, m in ranked))
     results: list[LoserOut] = []
-    for (ticker, meta), info in zip(ranked, prices):
+    for (ticker, meta), (info, sector) in zip(ranked, prices):
         price = None
         if info is not None:
             price = info.get("regularMarketPrice") or info.get("currentPrice")
-        sector = (
-            meta.get("sector")
-            or static_sector(ticker)
-            or (info.get("sector") if info else None)
-        )
         results.append(
             LoserOut(
                 ticker=ticker,
@@ -368,9 +436,27 @@ async def get_losers(limit: int = Query(_DEFAULT_LOSERS_LIMIT, ge=1, le=100)) ->
 @app.get("/tickers/{symbol}", response_model=TickerDetailOut)
 async def get_ticker_detail(symbol: str) -> TickerDetailOut:
     ticker = symbol.strip().upper()
-    info, bars = await asyncio.gather(_fetch_quote(ticker), _fetch_bars(ticker))
-    if info is None or not _looks_like_real_symbol(info):
+    live, snapshot, schwab_quotes, schwab_fund, bars = await asyncio.gather(
+        _live_yfinance_info(ticker),
+        _get_snapshot(ticker),
+        _fetch_schwab_quotes([ticker]),
+        _fetch_schwab_fundamentals(ticker),
+        _fetch_bars(ticker),
+    )
+    schwab_quote = schwab_quotes.get(ticker)
+    snapshot_info, snapshot_at = snapshot if snapshot else (None, None)
+    info = merge_ticker_info(live, snapshot_info, schwab_quote, schwab_fund)
+    if not _looks_like_real_symbol(info):
         raise HTTPException(404, f"No data for symbol {ticker}")
+    data_sources = [
+        name
+        for name, present in (
+            ("yfinance", live),
+            ("snapshot", snapshot_info),
+            ("schwab", schwab_quote or schwab_fund),
+        )
+        if present
+    ]
 
     return TickerDetailOut(
         ticker=ticker,
@@ -389,7 +475,38 @@ async def get_ticker_detail(symbol: str) -> TickerDetailOut:
             )
             for bar in bars
         ],
+        data_sources=data_sources,
+        snapshot_fetched_at=snapshot_at if (snapshot_info and not live) else None,
     )
+
+
+_MAX_SNAPSHOT_SYMBOLS = 200
+
+
+class YahooSnapshotIn(BaseModel):
+    snapshots: dict[str, dict]
+
+
+@app.post("/internal/yahoo-snapshot")
+async def post_yahoo_snapshot(
+    body: YahooSnapshotIn,
+    x_push_secret: str | None = Header(default=None),
+) -> dict:
+    """Receive Yahoo `info` snapshots pushed from a residential-IP machine.
+    Disabled (503) when `PUSH_SECRET` is unset; 401 on a wrong/missing
+    secret."""
+    expected = get_settings().push_secret
+    if not expected:
+        raise HTTPException(503, "Snapshot push is disabled")
+    if not x_push_secret or not hmac.compare_digest(
+        x_push_secret.encode(), expected.encode()
+    ):
+        raise HTTPException(401, "Invalid push secret")
+    if len(body.snapshots) > _MAX_SNAPSHOT_SYMBOLS:
+        raise HTTPException(413, f"Too many symbols (max {_MAX_SNAPSHOT_SYMBOLS})")
+    stored = await _get_snapshot_store().upsert_many(body.snapshots)
+    logger.info("yahoo_snapshot_stored", received=len(body.snapshots), stored=stored)
+    return {"stored": stored}
 
 
 def _to_analysis_out(cached: CachedAnalysis) -> TickerAnalysisOut:

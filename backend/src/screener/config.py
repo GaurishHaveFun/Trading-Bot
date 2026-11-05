@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     # on a paid Gemini plan, or if using the Anthropic provider, whose web
     # search tool has no such free-tier restriction.
     analysis_web_search: bool = False
+    # Yahoo-snapshot push channel (see scripts/push_yahoo_snapshot.py).
+    # Empty push_secret disables the POST /internal/yahoo-snapshot endpoint.
+    push_secret: str = ""
+    push_target_url: str = ""
+    yahoo_snapshot_db_path: str = ".cache/yahoo_snapshot.db"
 
 
 class RuleConfig(BaseModel):

@@ -47,12 +47,26 @@ def _patch_universes(yfinance_universe: _FakeUniverse, schwab_universe: _FakeUni
 
 
 @pytest.fixture(autouse=True)
+def _isolated_snapshot_db(tmp_path, monkeypatch):
+    from screener.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "yahoo_snapshot_db_path", str(tmp_path / "snap.db"))
+
+
+@pytest.fixture(autouse=True)
 def _no_schwab_by_default(request):
     """Keep tests hermetic: Schwab quotes fail unless a test patches them."""
     if "schwab_ok" in request.keywords:
-        yield
+        with patch(
+            "screener.api.app._fetch_schwab_fundamentals_raw",
+            side_effect=RuntimeError("no schwab fundamentals in tests"),
+        ):
+            yield
         return
     with patch(
+        "screener.api.app._fetch_schwab_fundamentals_raw",
+        side_effect=RuntimeError("no schwab fundamentals in tests"),
+    ), patch(
         "screener.api.app._fetch_schwab_quotes_raw",
         side_effect=RuntimeError("no schwab in tests"),
     ):

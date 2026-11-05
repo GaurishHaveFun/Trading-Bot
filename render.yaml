@@ -32,3 +32,5 @@ services:
       # plan or using ANALYSIS_PROVIDER=anthropic instead.
       - key: ANALYSIS_WEB_SEARCH
         value: "false"
+      - key: PUSH_SECRET
+        sync: false

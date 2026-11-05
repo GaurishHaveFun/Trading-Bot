@@ -97,3 +97,77 @@ async def fetch_schwab_quotes(symbols: list[str]) -> dict[str, dict]:
         except Exception as exc:
             logger.debug("schwab_client_close_error", error=str(exc))
     return result
+
+
+def shape_instrument_entry(entry: dict) -> dict | None:
+    """Convert one Schwab instruments (FUNDAMENTAL projection) entry into the
+    yfinance-info-style keys `ticker_data.to_stats`/`to_profile` read. Only
+    fields Schwab actually supplies are emitted; zeros/None are skipped for
+    fields where 0 means "unpopulated" (PE, EPS aside). Returns None if
+    nothing useful is present."""
+    fundamental = entry.get("fundamental")
+    if not isinstance(fundamental, dict):
+        fundamental = {}
+    mapping = {
+        "marketCap": "marketCap",
+        "trailingPE": "peRatio",
+        "trailingEps": "eps",
+        "priceToBook": "pbRatio",
+        "fiftyTwoWeekHigh": "high52",
+        "fiftyTwoWeekLow": "low52",
+        "dividendYield": "dividendYield",
+        "beta": "beta",
+        "averageVolume": "vol3MonthAvg",
+        "averageVolume10days": "vol10DayAvg",
+    }
+    shaped: dict = {}
+    for out_key, src_key in mapping.items():
+        value = fundamental.get(src_key)
+        if value is None:
+            continue
+        if out_key in ("marketCap", "averageVolume", "averageVolume10days", "fiftyTwoWeekHigh",
+                       "fiftyTwoWeekLow", "priceToBook", "trailingPE") and not value:
+            continue
+        shaped[out_key] = value
+    description = entry.get("description")
+    if isinstance(description, str) and description.strip():
+        shaped["shortName"] = description.strip()
+        shaped["longName"] = description.strip()
+    return shaped or None
+
+
+async def fetch_schwab_fundamentals(symbol: str) -> dict | None:
+    """Single-symbol Schwab instruments/fundamental lookup, shaped via
+    `shape_instrument_entry`. Raises on auth/network failure (callers catch);
+    returns None when Schwab has no entry for the symbol."""
+    settings = get_settings()
+    auth = SchwabAuth(
+        app_key=settings.schwab_app_key,
+        app_secret=settings.schwab_app_secret,
+        callback_url=settings.schwab_callback_url,
+        token_path=settings.schwab_token_path,
+    )
+    client = SchwabClient(auth)
+    try:
+        payload = await client.call(
+            lambda: client.raw.get_instruments(
+                [symbol.upper()],
+                projection=client.raw.Instrument.Projection.FUNDAMENTAL,
+            ),
+            label="get_instruments",
+        )
+    finally:
+        try:
+            await client.aclose()
+        except Exception as exc:
+            logger.debug("schwab_client_close_error", error=str(exc))
+    instruments = payload.get("instruments") if isinstance(payload, dict) else None
+    if not isinstance(instruments, list) or not instruments:
+        return None
+    entry = next(
+        (i for i in instruments if isinstance(i, dict) and str(i.get("symbol", "")).upper() == symbol.upper()),
+        instruments[0],
+    )
+    if not isinstance(entry, dict):
+        return None
+    return shape_instrument_entry(entry)
