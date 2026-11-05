@@ -5,6 +5,8 @@ does not block."""
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, time, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -14,8 +16,27 @@ from screener.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+NY = ZoneInfo("America/New_York")
+MARKET_OPEN = time(9, 30)
+MARKET_CLOSE = time(16, 0)
+
 CHUNK_SIZE = 50
 MAX_LOSERS = 60
+
+
+def is_market_open(now_utc: datetime) -> bool:
+    """True Mon-Fri 9:30-16:00 America/New_York inclusive of both endpoints.
+    US market holidays are NOT handled."""
+    if now_utc.tzinfo is None:
+        raise ValueError("now_utc must be timezone-aware")
+    ny = now_utc.astimezone(NY)
+    if ny.weekday() >= 5:
+        return False
+    return MARKET_OPEN <= ny.time().replace(tzinfo=None) <= MARKET_CLOSE
+
+
+def is_market_open_now() -> bool:
+    return is_market_open(datetime.now(timezone.utc))
 
 
 def chunked(items: list, size: int) -> list[list]:

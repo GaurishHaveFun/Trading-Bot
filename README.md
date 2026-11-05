@@ -26,9 +26,16 @@ Yahoo `info` snapshots to the API, which stores them in SQLite
 1. Pick a random secret. Set `PUSH_SECRET` on Render (dashboard) and in `backend/.env`.
 2. In `backend/.env` also set `PUSH_TARGET_URL=https://trading-bot-api-ijs9.onrender.com`.
 3. Test: `cd backend && uv run python scripts/push_yahoo_snapshot.py --dry-run`, then without `--dry-run`.
-4. Schedule every 30 min: copy `backend/scripts/com.tradingbot.yahoo-push.plist.example`
+4. Schedule (market days only): copy `backend/scripts/com.tradingbot.yahoo-push.plist.example`
    to `~/Library/LaunchAgents/com.tradingbot.yahoo-push.plist`, fix the paths, then
    `launchctl load ~/Library/LaunchAgents/com.tradingbot.yahoo-push.plist`.
+
+   The job runs Mon-Fri at 9:30 (open), then every 30 min through 16:00 (close), laptop
+   local time, which must be US Eastern for the entries to line up. The script is invoked
+   with `--if-market-open`, which exits 0 outside Mon-Fri 9:30-16:00 America/New_York, so
+   off-hours runs are harmless even if the laptop timezone differs (but then adjust the
+   `Hour` entries in the plist). **US market holidays are not handled**; the job will
+   still run on them. launchd runs a missed calendar job once when the Mac wakes from sleep.
 
 Render's free-tier filesystem is ephemeral: snapshots vanish on every redeploy/restart
 until the next push (run the script manually to refill immediately). With `PUSH_SECRET`
