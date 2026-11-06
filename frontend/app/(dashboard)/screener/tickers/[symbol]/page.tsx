@@ -1,4 +1,5 @@
 import Link from "next/link";
+import BackButton from "@/components/BackButton";
 import AiAnalysis from "@/components/AiAnalysis";
 import AnalystTargets from "@/components/AnalystTargets";
 import CompanyProfile from "@/components/CompanyProfile";
@@ -56,6 +57,7 @@ export default async function TickerPage({
   if (!detail && !history) {
     return (
       <div className="flex flex-col gap-4">
+        <BackButton />
         <div>
           <h1 className="font-display text-2xl font-semibold text-foreground">{ticker}</h1>
           <p className="text-sm text-foreground-muted">Score history and price chart.</p>
@@ -83,6 +85,7 @@ export default async function TickerPage({
 
   return (
     <div className="flex flex-col gap-4">
+      <BackButton />
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-semibold text-foreground">{ticker}</h1>
